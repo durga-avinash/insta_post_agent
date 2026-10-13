@@ -37,6 +37,36 @@ def test_automatic_approval_requires_two_curated_trusted_sources():
     assert any("curated trusted publishers" in reason for reason in story.verification_reasons)
 
 
+def test_uncurated_newer_report_cannot_lead_an_approved_story():
+    trusted_recent = article(
+        "Fixture district leaders approve a coastal flood plan",
+        "https://bbc.com/fixture/flood-plan",
+        "bbc.com",
+        description="A fixture report says district leaders approve a coastal flood plan.",
+        published_at=NOW - timedelta(minutes=9),
+    )
+    trusted_second = article(
+        "Fixture coastal flood plan approved by district leaders",
+        "https://theguardian.com/fixture/flood-plan",
+        "theguardian.com",
+        description="A fixture account says leaders approve the new coastal flood plan.",
+        published_at=NOW - timedelta(minutes=12),
+    )
+    uncurated_newer = article(
+        "Fixture newest details: district leaders approve a coastal flood plan",
+        "https://unknown.example.test/flood-plan",
+        "unknown.example.test",
+        description="A fixture summary says district leaders approve a coastal flood plan.",
+        published_at=NOW - timedelta(minutes=1),
+    )
+
+    story = build_story([uncurated_newer, trusted_second, trusted_recent], "fixture-batch", now=NOW)
+
+    assert story.verification_status == "APPROVED"
+    assert story.headline == trusted_recent.title
+    assert story.original_url == trusted_recent.url
+
+
 def test_sensitive_and_insufficient_evidence_gating():
     single = article("Fixture report on a policy planning meeting", "https://one.example.test/a", "one.example.test")
     assert build_story([single], "fixture-batch", now=NOW).verification_status == "NEEDS_REVIEW"

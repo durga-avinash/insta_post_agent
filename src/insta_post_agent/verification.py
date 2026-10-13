@@ -160,7 +160,18 @@ def deterministic_summary(articles: list[Article], max_chars: int = 190) -> str:
 
 def build_story(articles: list[Article], batch_id: str, now: datetime | None = None) -> Story:
     clock = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    ordered = sorted(articles, key=lambda a: (a.published_at is not None, a.published_at or clock), reverse=True)
+    # Anchor the displayed headline and deterministic summary to a curated
+    # publisher whenever one is present. Uncurated coverage may help reveal
+    # conflicts, but it must not become the carousel's lead attribution.
+    ordered = sorted(
+        articles,
+        key=lambda a: (
+            is_trusted_source_domain(a.source_domain),
+            a.published_at is not None,
+            a.published_at or clock,
+        ),
+        reverse=True,
+    )
     lead = ordered[0]
     evidence, reasons, credibility = compare_reports(ordered)
     reject_terms = ("sponsored", "advertisement", "quiz", "horoscope", "newsletter", "podcast")
