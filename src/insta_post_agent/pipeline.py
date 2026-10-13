@@ -26,6 +26,7 @@ from .trends import (
     collect_trend_signals,
     fresh_trend_signals,
     load_trend_feeds,
+    merge_specific_trend_coverage,
     match_story_to_trends,
 )
 
@@ -193,9 +194,8 @@ def _make_summary(
             s.verification_status != "APPROVED" or s.trend_status != "CONFIRMED_GOOGLE_TRENDS" for s in selected
         ),
         "trend_selection_mode": (
-            "MIXED_TREND_AND_FALLBACK" if any(fallback_by_region.values()) and any(matched_by_region.values())
-            else "NEWSROOM_FALLBACK_UNCONFIRMED" if any(fallback_by_region.values())
-            else "GOOGLE_TRENDS_MATCHED" if any(matched_by_region.values())
+            "GOOGLE_TRENDS_MATCHED" if selected
+            else "TRENDS_NEED_SOURCE_REVIEW" if trend_matched_review_needed
             else "NO_ELIGIBLE_CONTENT"
         ),
         "content_available": bool(selected),
@@ -269,9 +269,16 @@ def run_daily(
             raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number") from exc
         if max_trend_queries < 1:
             raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number")
+        try:
+            max_trend_articles = int(os.getenv("NEWS_TREND_ARTICLES_PER_QUERY", "20"))
+        except ValueError as exc:
+            raise ValueError("NEWS_TREND_ARTICLES_PER_QUERY must be a positive whole number") from exc
+        if max_trend_articles < 1:
+            raise ValueError("NEWS_TREND_ARTICLES_PER_QUERY must be a positive whole number")
         trend_news_articles, trend_news_feed_status = collect_trend_news_articles(
             current_trends,
             max_queries_per_geo=max_trend_queries,
+            max_items_per_query=max_trend_articles,
             session=feed_client,
             retrieved_at=clock,
         )
@@ -307,7 +314,7 @@ def run_daily(
     if not current_trends:
         warnings.append("No fresh Google Trends evidence was obtained; no story can be selected for a trending carousel")
 
-    clusters = cluster_articles(fresh_articles)
+    clusters = merge_specific_trend_coverage(cluster_articles(fresh_articles), current_trends)
     candidates = [build_story(group, batch_id, now=clock) for group in clusters if group]
     for story in candidates:
         apply_trend_evidence(story, match_story_to_trends(story, current_trends, min_searches=min_searches))

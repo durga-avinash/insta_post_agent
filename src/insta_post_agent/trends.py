@@ -25,6 +25,11 @@ _STOP_WORDS = {
 }
 
 
+def trend_news_source_id(signal: TrendSignal) -> str:
+    """Stable feed identity for one region/query response from Google News RSS."""
+    return f"google-news-trend-{signal.geo.lower()}-{stable_id(normalize_title(signal.query))}"
+
+
 def load_trend_feeds(path: Path) -> list[TrendFeed]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     feeds = []
@@ -131,7 +136,7 @@ def collect_trend_news_articles(
     signals: list[TrendSignal],
     *,
     max_queries_per_geo: int = 10,
-    max_items_per_query: int = 8,
+    max_items_per_query: int = 20,
     session: requests.Session | None = None,
     retrieved_at: datetime | None = None,
     min_delay_seconds: float = 0.25,
@@ -176,7 +181,7 @@ def collect_trend_news_articles(
             time.sleep(min_delay_seconds)
         region, language, country, edition = locale[signal.geo]
         source = FeedSource(
-            id=f"google-news-trend-{signal.geo.lower()}-{stable_id(normalize_title(signal.query))}",
+            id=trend_news_source_id(signal),
             name=f"Google News RSS ({signal.geo}: {signal.query})",
             url="https://news.google.com/rss/search",
             region=region,  # type: ignore[arg-type]
@@ -245,6 +250,70 @@ def _match_strength(query: str, candidate: str) -> float:
     if len(overlap) < 2 or recall < 0.67:
         return 0.0
     return min(0.99, max(score, sequence * 0.85))
+
+
+def merge_specific_trend_coverage(
+    clusters: list[list[Article]],
+    signals: list[TrendSignal],
+) -> list[list[Article]]:
+    """Group distinct publisher reports returned for one specific current trend query.
+
+    Google News RSS gives every result in a query response the same feed ID. The
+    query itself can therefore link two differently worded reports about one
+    sufficiently specific event. Generic queries are deliberately excluded;
+    verification still checks each original publisher URL independently.
+    """
+    result = [list(cluster) for cluster in clusters]
+    for signal in signals:
+        if len(_tokens(signal.query)) < 3:
+            continue
+        source_id = trend_news_source_id(signal)
+        linked_urls = {
+            canonicalize_url(item.get("url", ""))
+            for item in signal.news_items
+            if item.get("url")
+        }
+        related = [
+            article
+            for cluster in result
+            for article in cluster
+            if article.source_id == source_id
+            and article.source_type == "google_news_search"
+            and article.region == signal.region
+            and (
+                _match_strength(signal.query, article.title) >= 0.55
+                or canonicalize_url(article.canonical_url or article.url) in linked_urls
+            )
+        ]
+        related_by_url = {
+            canonicalize_url(article.canonical_url or article.url): article
+            for article in related
+        }
+        if len(related_by_url) < 2:
+            continue
+        related_keys = set(related_by_url)
+        touched_indexes = [
+            index for index, cluster in enumerate(result)
+            if any(canonicalize_url(article.canonical_url or article.url) in related_keys for article in cluster)
+        ]
+        merged: list[Article] = []
+        seen_urls: set[str] = set()
+        for index in touched_indexes:
+            for article in result[index]:
+                key = canonicalize_url(article.canonical_url or article.url)
+                if key and key not in seen_urls:
+                    seen_urls.add(key)
+                    merged.append(article)
+        for article in related:
+            key = canonicalize_url(article.canonical_url or article.url)
+            if key and key not in seen_urls:
+                seen_urls.add(key)
+                merged.append(article)
+        if touched_indexes:
+            for index in reversed(touched_indexes):
+                result.pop(index)
+        result.append(merged)
+    return result
 
 
 def match_story_to_trends(story: Story, signals: list[TrendSignal], *, min_searches: int = 10_000) -> list[dict[str, object]]:

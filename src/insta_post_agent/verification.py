@@ -29,7 +29,7 @@ TRUSTED_SOURCE_DOMAINS = frozenset({
     "theguardian.com", "npr.org", "thehindu.com", "indianexpress.com",
     "hindustantimes.com", "timesofindia.indiatimes.com", "ndtv.com", "indiatoday.in",
     "scroll.in", "theprint.in", "livemint.com", "moneycontrol.com",
-    "economictimes.indiatimes.com", "nytimes.com", "washingtonpost.com", "wsj.com",
+    "economictimes.indiatimes.com", "ndtvprofit.com", "yahoo.com", "nytimes.com", "washingtonpost.com", "wsj.com",
     "ft.com", "cnn.com", "cbsnews.com", "pbs.org", "nbcnews.com", "abcnews.go.com",
     "dw.com", "aljazeera.com", "france24.com", "abc.net.au", "cbc.ca", "nhk.or.jp",
     "espn.com", "espn.in", "espncricinfo.com", "cricbuzz.com",

@@ -4,13 +4,16 @@ from datetime import timedelta
 from pathlib import Path
 
 from insta_post_agent.models import TrendFeed, TrendSignal
+from insta_post_agent.scoring import cluster_articles, titles_describe_same_event
 from insta_post_agent.trends import (
     apply_trend_evidence,
     collect_trend_news_articles,
     fresh_trend_signals,
+    merge_specific_trend_coverage,
     match_story_to_trends,
     parse_approximate_searches,
     parse_trend_feed_content,
+    trend_news_source_id,
 )
 from insta_post_agent.verification import build_story
 from test_news_core import NOW, article
@@ -116,6 +119,55 @@ def test_trend_match_needs_most_query_terms_not_one_common_word():
     )
 
     assert match_story_to_trends(story, [signal], min_searches=10_000) == []
+
+
+def test_specific_trend_query_can_join_differently_worded_independent_publisher_reports():
+    signal = TrendSignal(
+        geo="IN", region="INDIA", query="India Champions vs West Indies Champions standings",
+        approx_traffic="2K+", approximate_searches=2_000,
+        started_at=NOW - timedelta(minutes=3), url="https://trends.google.com/trending/rss?geo=IN",
+    )
+    source_id = trend_news_source_id(signal)
+    one = article(
+        "WCL 2026: Can India Champions qualify for semi-finals? Qualification scenarios ahead of West Indies match",
+        "https://bbc.com/fixture/wcl-qualification", "bbc.com",
+        description="FIXTURE ONLY: India Champions could qualify for semi-finals after the West Indies match.",
+        region="INDIA", source_id=source_id,
+    )
+    two = article(
+        "India Champions Vs West Indies Champions Live Streaming: When And Where To Watch WCL 2026 Match",
+        "https://reuters.com/fixture/wcl-match", "reuters.com",
+        description="FIXTURE ONLY: The India Champions versus West Indies Champions match will be available by live stream.",
+        region="INDIA", source_id=source_id,
+    )
+    one.source_type = two.source_type = "google_news_search"
+    assert titles_describe_same_event(one.title, two.title) is False
+
+    clusters = cluster_articles([one, two])
+    assert len(clusters) == 2
+    merged = merge_specific_trend_coverage(clusters, [signal])
+    assert len(merged) == 1
+    assert len(merged[0]) == 2
+
+    story = build_story(merged[0], "fixture-batch", now=NOW)
+    assert story.verification_status == "APPROVED"
+    evidence = match_story_to_trends(story, [signal], min_searches=1_000)
+    assert len(evidence) == 1
+    assert evidence[0]["query"] == signal.query
+
+
+def test_generic_trend_query_does_not_join_coverage_articles():
+    signal = TrendSignal(
+        geo="GB", region="WORLD", query="championship", approx_traffic="20K+",
+        approximate_searches=20_000, started_at=NOW - timedelta(minutes=3),
+        url="https://trends.google.com/trending/rss?geo=GB",
+    )
+    source_id = trend_news_source_id(signal)
+    one = article("FIXTURE ONLY: Local championship match report", "https://bbc.com/fixture/a", "bbc.com", region="WORLD", source_id=source_id)
+    two = article("FIXTURE ONLY: Championship council announces a new schedule", "https://reuters.com/fixture/b", "reuters.com", region="WORLD", source_id=source_id)
+    one.source_type = two.source_type = "google_news_search"
+
+    assert merge_specific_trend_coverage([[one], [two]], [signal]) == [[one], [two]]
 
 
 def test_stale_or_undated_trend_signals_are_not_eligible():
