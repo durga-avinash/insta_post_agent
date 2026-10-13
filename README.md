@@ -8,6 +8,7 @@ A zero-cost, review-first daily news carousel generator. It gathers public RSS m
 - Keeps the source headline, publisher, original URL, publication time, retrieval time, RSS description, and canonical URL with each candidate.
 - Deduplicates canonical URLs and clusters similar headlines. Ranking is a published editorial proxy: recency (35 points maximum), distinct publisher coverage (40 maximum), and keyword-based public significance (25 maximum). Search interest is unavailable and always scored as zero.
 - Approves only clusters with descriptions and timestamped reports from at least two source groups, with no detected uncertainty or sensitive-topic flags. An automated approval is an internal editorial signal, not a fact-check guarantee. Sensitive or developing stories and unresolved disputes need a person to review them. Syndication clues and identical descriptions reduce source-independence credit.
+- If a region has too few automatically approved stories, the package can fill remaining slots with source-backed `NEEDS_REVIEW` drafts only when every item has a timestamp and description and no detected mismatch, sensitive-topic, dispute, or chronology flags. These slides and caption carry a visible human-review warning. `workflow_complete` means the six-slide review package and its files passed checks; `publication_ready` stays false unless all six stories passed the automated gate. Unsafe or evidence-poor candidates remain a reported shortfall.
 - Builds source-bound summaries without an LLM by default. An optional OpenAI-compatible editing helper is available in `editor.py`; it is not enabled in the daily pipeline. No API key is required, and no provider is selected or assumed to be free. If you later wire in a provider, confirm its current free plan and terms first.
 - Draws clearly illustrative editorial graphics, not event photographs. Output is 1080 × 1350 pixels (4:5), with text rendered by Pillow.
 - Writes `output/YYYY-MM-DD/` with the workbook, caption, evidence manifest, summary, slides that passed the automated gate, and a ZIP. A partial batch is clearly marked incomplete and exits with status 2; it never fills a shortfall with invented stories.
@@ -45,7 +46,7 @@ GitHub Actions usage and retention depend on the account plan and repository set
 
 ## Review the package
 
-1. Open `summary.json`. `workflow_complete` is true only when six images, workbook checks, ZIP checks, and text layout checks pass.
+1. Open `summary.json`. `workflow_complete` means the six-slide review package, workbook, ZIP, and text layout checks pass. Check `publication_ready` and the selected story statuses separately before using any slide.
 2. Read `verification_manifest.json` and the workbook's `Verification_Log` before using any story.
 3. Check every source link and the full linked article, especially for sensitive or developing stories.
 4. Review slide attributions and the caption, then publish manually if appropriate.
