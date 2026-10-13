@@ -21,6 +21,9 @@ from .workbook import create_workbook, validate_workbook
 
 LOGGER = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+MAX_STORIES_PER_REGION = 3
+MAX_SLIDES = 6
+DEFAULT_MIN_TREND_SCORE = 55.0
 
 _UNSAFE_REVIEW_FLAGS = (
     "does not match its headline",
@@ -80,8 +83,19 @@ def _make_summary(
     warnings: list[str],
     history_persistence: str,
     text_layout_valid: bool,
+    min_trend_score: float,
+    qualified_by_region: dict[str, int],
+    below_threshold_by_region: dict[str, int],
 ) -> dict[str, object]:
     slide_count = len(slide_results)
+    selected_by_region = {
+        region: sum(story.region == region for story in selected)
+        for region in ("INDIA", "WORLD")
+    }
+    slide_limit_respected = (
+        slide_count <= MAX_SLIDES
+        and all(count <= MAX_STORIES_PER_REGION for count in selected_by_region.values())
+    )
     return {
         "batch_date": date_text,
         "candidates_collected": sum(len(s.articles) for s in candidates),
@@ -93,13 +107,22 @@ def _make_summary(
         "stories_selected_approved": sum(s.verification_status == "APPROVED" for s in selected),
         "stories_selected_needs_review": sum(s.verification_status == "NEEDS_REVIEW" for s in selected),
         "images_generated": slide_count,
-        "all_six_slides_generated": slide_count == 6,
+        "max_slides": MAX_SLIDES,
+        "max_stories_per_region": MAX_STORIES_PER_REGION,
+        "minimum_trend_score": min_trend_score,
+        "qualified_by_region": qualified_by_region,
+        "below_threshold_by_region": below_threshold_by_region,
+        "selected_by_region": selected_by_region,
+        "all_six_slides_generated": slide_count == MAX_SLIDES,
+        "all_selected_slides_generated": slide_count == len(selected),
+        "slide_limit_respected": slide_limit_respected,
         "excel_validated": workbook_ok,
         "images_layout_valid": text_layout_valid,
         "zip_created": zip_ok,
-        "publication_ready": slide_count == 6 and all(s.verification_status == "APPROVED" for s in selected),
+        "publication_ready": bool(selected) and all(s.verification_status == "APPROVED" for s in selected),
         "human_review_required": any(s.verification_status == "NEEDS_REVIEW" for s in selected),
-        "workflow_complete": slide_count == 6 and workbook_ok and zip_ok and text_layout_valid,
+        "batch_status": "NO_STORIES_MET_THRESHOLD" if not selected else "READY_FOR_REVIEW",
+        "workflow_complete": slide_count == len(selected) and slide_limit_respected and workbook_ok and zip_ok and text_layout_valid,
         "history_persistence": history_persistence,
         "warnings": warnings,
     }
@@ -121,6 +144,7 @@ def run_daily(
     max_age_hours: int | None = None,
     history_days: int | None = None,
     max_feed_items: int | None = None,
+    min_trend_score: float | None = None,
 ) -> dict[str, object]:
     clock = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     local_date = clock.astimezone(IST).date().isoformat()
@@ -128,6 +152,13 @@ def run_daily(
     max_age = max_age_hours if max_age_hours is not None else int(os.getenv("NEWS_MAX_AGE_HOURS", "36"))
     repeat_days = history_days if history_days is not None else int(os.getenv("NEWS_HISTORY_DAYS", "2"))
     per_feed = max_feed_items if max_feed_items is not None else int(os.getenv("NEWS_MAX_FEED_ITEMS", "40"))
+    threshold_value = min_trend_score if min_trend_score is not None else os.getenv("NEWS_MIN_TREND_SCORE", str(DEFAULT_MIN_TREND_SCORE))
+    try:
+        threshold = float(threshold_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("NEWS_MIN_TREND_SCORE must be a number from 0 to 100") from exc
+    if not 0 <= threshold <= 100:
+        raise ValueError("NEWS_MIN_TREND_SCORE must be between 0 and 100")
     state = NewsHistory(history_path)
     prior_batch = state.completed_batch(batch_id)
     if prior_batch is not None:
@@ -161,14 +192,21 @@ def run_daily(
     state.prune(now=clock)
     selected: list[Story] = []
     selected_event_keys: list[tuple[str, str]] = []
+    qualified_by_region: dict[str, int] = {}
+    below_threshold_by_region: dict[str, int] = {}
     for region in ("INDIA", "WORLD"):
-        region_stories = [s for s in candidates if s.region == region and s.verification_status == "APPROVED"]
-        review_drafts = [s for s in candidates if s.region == region and _eligible_review_draft(s)]
+        eligible_stories = [
+            story for story in candidates
+            if story.region == region
+            and (story.verification_status == "APPROVED" or _eligible_review_draft(story))
+        ]
+        qualified_stories = [story for story in eligible_stories if story.trend_score >= threshold]
+        qualified_stories.sort(key=lambda story: story.trend_score, reverse=True)
+        qualified_by_region[region] = len(qualified_stories)
+        below_threshold_by_region[region] = sum(story.trend_score < threshold for story in eligible_stories)
         kept = 0
         review_selected = 0
-        # Fully approved items are preferred. If there are not enough, include only
-        # reviewable source-backed drafts, keeping NEEDS_REVIEW explicit in every output.
-        for story in [*region_stories, *review_drafts]:
+        for story in qualified_stories:
             key = cluster_key(story.articles)
             signature = "\n".join(article.title for article in story.articles)
             if state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
@@ -179,10 +217,14 @@ def run_daily(
             kept += 1
             if story.verification_status == "NEEDS_REVIEW":
                 review_selected += 1
-            if kept == 3:
+            if kept == MAX_STORIES_PER_REGION:
                 break
-        if kept < 3:
-            warnings.append(f"{region}: only {kept} of 3 slide slots had sufficient source material after verification and freshness checks")
+        if kept < MAX_STORIES_PER_REGION:
+            warnings.append(
+                f"{region}: selected {kept} of a maximum {MAX_STORIES_PER_REGION}; "
+                f"{len(qualified_stories)} eligible story/stories met the {threshold:.1f} trend threshold, "
+                "and lower-scoring, unsafe, stale, or recently selected items were excluded"
+            )
         if review_selected:
             warnings.append(f"{region}: {review_selected} selected slide(s) are NEEDS_REVIEW and require human corroboration before publication")
     date_dir = output_root / local_date
@@ -193,7 +235,7 @@ def run_daily(
         path = date_dir / filename
         story.image_path = filename
         story.caption = _caption_section(story)
-        layout = render_slide(story, slide_number, 6, path)
+        layout = render_slide(story, slide_number, len(selected), path)
         with Image.open(path) as image:
             if image.size != (1080, 1350):
                 raise ValueError(f"Slide has wrong dimensions: {filename}")
@@ -207,7 +249,7 @@ def run_daily(
 
     caption = make_caption(selected)
     if not selected:
-        caption = "Today's evidence-backed brief has no stories ready for publication. Please review the verification manifest."
+        caption = "No stories met today's configured high-trend and evidence thresholds. Please review the verification manifest."
     caption_path = date_dir / "carousel_caption.txt"
     caption_path.write_text(caption + "\n", encoding="utf-8")
     workbook_path = date_dir / "Daily_News_Report.xlsx"
@@ -225,7 +267,16 @@ def run_daily(
         "feed_status": feed_status,
         "ranking": {
             "components": {"recency": "exponential decay over age in hours", "independent_coverage_proxy": "20 points per additional distinct source domain (capped at 40)", "public_significance_proxy": "transparent keyword proxy (capped at 25)", "search_interest": "not available; scored as 0 and never fabricated"},
-            "selection": "separate region rankings; APPROVED stories first, then eligible source-backed NEEDS_REVIEW drafts with visible warnings; up to three per region; recent events skipped",
+            "minimum_trend_score": threshold,
+            "maximum_per_region": MAX_STORIES_PER_REGION,
+            "qualified_by_region": qualified_by_region,
+            "below_threshold_by_region": below_threshold_by_region,
+            "selected_by_region": {
+                region: sum(story.region == region for story in selected)
+                for region in ("INDIA", "WORLD")
+            },
+            "selection": "separate region rankings; include only APPROVED stories or safe source-backed NEEDS_REVIEW drafts at or above the configured trend threshold; select at most three per region by score; recent events skipped",
+            "trend_score_note": "Internal editorial proxy only; no search-volume or social-trend measurements are available.",
         },
         "selected_stories": [
             {
@@ -251,8 +302,8 @@ def run_daily(
     manifest_path = date_dir / "verification_manifest.json"
     _write_json(manifest_path, manifest)
 
-    if len(selected) < 6:
-        warnings.append(f"Only {len(selected)} evidence-approved slides were generated; six are required for a complete batch")
+    if not selected:
+        warnings.append(f"No story met the minimum trend score of {threshold:.1f}; an empty report was generated without inventing content")
     content_paths = [workbook_path, caption_path, manifest_path]
     content_paths.extend(date_dir / str(item["path"]).split("\\")[-1].split("/")[-1] for item in slide_results)
     zip_path = date_dir / "content_package.zip"
@@ -267,6 +318,8 @@ def run_daily(
         date_text=local_date, candidates=candidates, selected=selected, slide_results=slide_results,
         workbook_ok=workbook_ok, zip_ok=zip_ok, warnings=warnings, history_persistence=history_persistence,
         text_layout_valid=not any(bool(item.get("text_overflow")) for item in slide_results),
+        min_trend_score=threshold, qualified_by_region=qualified_by_region,
+        below_threshold_by_region=below_threshold_by_region,
     )
     _write_json(date_dir / "summary.json", summary)
     if summary["workflow_complete"]:
@@ -276,4 +329,3 @@ def run_daily(
     state.close()
     LOGGER.info("Batch %s: %s articles, %s clusters, %s approved, %s slides", batch_id, len(articles), len(candidates), summary["stories_approved"], len(slide_results))
     return summary
-
