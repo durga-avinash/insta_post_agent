@@ -12,7 +12,7 @@ from insta_post_agent.caption import make_caption
 from insta_post_agent.history import NewsHistory
 from insta_post_agent.models import TrendSignal
 from insta_post_agent.pipeline import run_daily
-from insta_post_agent.pipeline import _best_unused_trend_evidence
+from insta_post_agent.pipeline import _best_unused_trend_evidence, _eligible_review_draft
 from insta_post_agent.render import render_slide
 from insta_post_agent.verification import build_story
 from insta_post_agent.workbook import create_workbook, validate_workbook
@@ -163,6 +163,79 @@ def test_pipeline_completes_with_only_the_high_trend_stories_available(tmp_path,
         assert "Daily_News_Report.xlsx" in names
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
+
+
+def test_current_trusted_single_source_becomes_marked_review_draft(tmp_path, monkeypatch):
+    report = article(
+        "FIXTURE ONLY: Indian city opens transit station after repairs",
+        "https://www.bbc.com/news/fixture-transit-station",
+        "bbc.com",
+        description="A fixture report says an Indian city opens a transit station after repairs.",
+        region="INDIA",
+        published_at=NOW - timedelta(minutes=20),
+        source_id="bbc-india-fixture",
+    )
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: ([report], [{"source_id": "bbc-fixture", "status": "OK", "items": "1"}]),
+    )
+    signal = TrendSignal(
+        geo="IN",
+        region="INDIA",
+        query=report.title,
+        approx_traffic="50K+",
+        approximate_searches=50_000,
+        started_at=NOW - timedelta(minutes=5),
+        url="https://trends.google.com/trends/explore?q=fixture",
+        news_items=[],
+    )
+
+    summary = run_daily(
+        root=Path.cwd(),
+        output_root=tmp_path / "output",
+        history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW,
+        sources=[],
+        trend_signals=[signal],
+    )
+    date_dir = tmp_path / "output" / "2026-10-13"
+
+    assert _eligible_review_draft(build_story([report], "fixture-batch", now=NOW)) is True
+    assert summary["workflow_complete"] is True
+    assert summary["batch_status"] == "REVIEW_DRAFT_AVAILABLE"
+    assert summary["trend_selection_mode"] == "TRENDS_MATCHED_REVIEW_DRAFT"
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["stories_selected_needs_review"] == 1
+    assert summary["publication_ready"] is False
+    assert summary["images_generated"] == 1
+    with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
+        names = set(archive.namelist())
+        assert "slide_01_india.png" in names
+        assert "verification_manifest.json" in names
+    caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+    assert "Review draft" in caption
+    assert "NEEDS_REVIEW" in caption
+    manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["selected_stories"][0]["verification_status"] == "NEEDS_REVIEW"
+    assert "independent corroboration is missing" in manifest["selected_stories"][0]["selection_reason"]
+
+
+def test_review_drafts_exclude_unknown_publishers_and_sensitive_topics():
+    unknown = article(
+        "FIXTURE ONLY: Local city opens a new commuter station",
+        "https://unknown.example.test/station",
+        "unknown.example.test",
+        description="A fixture report says a local city opens a new commuter station.",
+    )
+    sensitive = article(
+        "FIXTURE ONLY: City reports casualties after transit station attack",
+        "https://www.bbc.com/news/fixture-sensitive",
+        "bbc.com",
+        description="A fixture report says a city reports casualties after a transit station attack.",
+    )
+
+    assert _eligible_review_draft(build_story([unknown], "fixture-batch", now=NOW)) is False
+    assert _eligible_review_draft(build_story([sensitive], "fixture-batch", now=NOW)) is False
 
 
 def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch):

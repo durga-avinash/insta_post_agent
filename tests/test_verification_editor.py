@@ -50,8 +50,8 @@ def test_sensitive_and_insufficient_evidence_gating():
 def test_review_draft_fallback_rejects_sensitive_conflicted_or_evidence_poor_stories():
     safe = article(
         "Fixture local library publishes a community reading report",
-        "https://single.example.test/library",
-        "single.example.test",
+        "https://www.bbc.com/news/fixture-library",
+        "bbc.com",
         description="A local library publishes a community reading report for nearby schools.",
     )
     assert _eligible_review_draft(build_story([safe], "fixture-batch", now=NOW)) is True
