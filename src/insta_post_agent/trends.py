@@ -13,7 +13,7 @@ from pathlib import Path
 import requests
 
 from .models import Story, TrendFeed, TrendSignal
-from .normalize import normalize_timestamp, normalize_title
+from .normalize import canonicalize_url, normalize_timestamp, normalize_title
 from .collector import feed_error_detail, make_session
 
 LOGGER = logging.getLogger(__name__)
@@ -179,14 +179,27 @@ def match_story_to_trends(story: Story, signals: list[TrendSignal], *, min_searc
         if signal.approximate_searches is None or signal.approximate_searches < min_searches:
             continue
         aliases = [signal.query, *(item.get("title", "") for item in signal.news_items)]
-        best = (0.0, "", "")
+        best = (0.0, "", "", "headline_text_similarity", "")
         for alias in aliases:
             if not alias:
                 continue
             for document in documents:
                 strength = _match_strength(alias, document)
                 if strength > best[0]:
-                    best = (strength, alias, document)
+                    best = (strength, alias, document, "headline_text_similarity", "")
+        # Google Trends provides related publisher links. An exact canonical URL
+        # match is stronger than title similarity and survives headline rewrites.
+        article_urls = {
+            canonicalize_url(article.canonical_url or article.url): article.title
+            for article in story.articles
+            if canonicalize_url(article.canonical_url or article.url)
+        }
+        for item in signal.news_items:
+            linked_url = canonicalize_url(item.get("url", ""))
+            if linked_url and linked_url in article_urls:
+                linked_title = item.get("title", "") or signal.query
+                best = (1.0, linked_title, article_urls[linked_url], "google_trends_related_news_url", linked_url)
+                break
         if best[0] < 0.55:
             continue
         matched.append(
@@ -201,6 +214,8 @@ def match_story_to_trends(story: Story, signals: list[TrendSignal], *, min_searc
                 "matched_against": best[2],
                 "matched_trend_text": best[1],
                 "match_strength": round(best[0], 3),
+                "match_method": best[3],
+                "matched_news_item_url": best[4],
                 "related_news_items": signal.news_items,
             }
         )
@@ -228,4 +243,5 @@ def apply_trend_evidence(story: Story, evidence: list[dict[str, object]]) -> Non
         "headline_trend_match_component": match_component,
     }
     story.trend_score = round(search_component + location_component + match_component, 2)
+
 

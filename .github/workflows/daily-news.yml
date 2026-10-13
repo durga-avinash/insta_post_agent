@@ -35,6 +35,7 @@ jobs:
 
       - name: Install pinned dependencies
         run: |
+          set -o pipefail
           mkdir -p logs
           python -m pip install -r requirements.txt 2>&1 | tee logs/install.log
 
@@ -48,6 +49,7 @@ jobs:
 
       - name: Run automated tests
         run: |
+          set -o pipefail
           mkdir -p logs
           python -m pytest -q 2>&1 | tee logs/pytest.log
 
@@ -84,3 +86,4 @@ jobs:
             output/**/verification_manifest.json
           if-no-files-found: ignore
           retention-days: 14
+

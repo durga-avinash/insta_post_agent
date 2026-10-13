@@ -127,6 +127,25 @@ def _make_summary(
         "google_trend_signals_fresh": fresh_trends,
         "matched_trends_by_region": matched_by_region,
         "unconfirmed_fallbacks_by_region": fallback_by_region,
+        "selected_story_status": [
+            {
+                "slide_region": story.region,
+                "headline": story.headline,
+                "verification_status": story.verification_status,
+                "trend_status": story.trend_status,
+                "trend_evidence": [
+                    {
+                        "geo": item.get("geo"),
+                        "query": item.get("query"),
+                        "approx_traffic": item.get("approx_traffic"),
+                        "match_method": item.get("match_method"),
+                    }
+                    for item in story.trend_evidence
+                ],
+                "human_review_required": story.verification_status == "NEEDS_REVIEW" or story.trend_status != "CONFIRMED_GOOGLE_TRENDS",
+            }
+            for story in selected
+        ],
         "selected_by_region": selected_by_region,
         "six_slide_maximum_respected": slide_limit_respected,
         "all_selected_slides_generated": slide_count == len(selected),
@@ -437,3 +456,4 @@ def run_daily(
         batch_id, len(articles), len(candidates), len(current_trends), summary["stories_approved"], len(slide_results), summary["trend_selection_mode"],
     )
     return summary
+

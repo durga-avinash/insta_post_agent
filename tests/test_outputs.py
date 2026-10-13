@@ -119,7 +119,7 @@ def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monk
     assert len(manifest["selected_news_ids"]) == 6
     duplicate = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=expected_now, sources=[], trend_signals=fixture_trend_signals(records),
+        now=expected_now, sources=[], trend_signals=fixture_trend_signals(records), allow_repeat_batch=False,
     )
     assert duplicate["duplicate_batch"] is True
     assert duplicate["workflow_complete"] is True
@@ -326,3 +326,4 @@ def test_caption_keeps_six_story_urls_under_target_length():
     caption = make_caption(stories)
     assert len(caption) <= 2200
     assert all(story.original_url in caption for story in stories)
+

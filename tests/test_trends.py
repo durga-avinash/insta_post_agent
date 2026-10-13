@@ -60,6 +60,33 @@ def test_trend_match_requires_region_volume_and_headline_evidence():
     assert story.score_components["google_trends_search_volume_lower_bound"] == 20_000
 
 
+def test_trend_related_news_canonical_url_confirms_rewritten_headline():
+    linked_url = "https://news.example.test/story/kerala-water?utm_source=rss"
+    story = build_story(
+        [article(
+            "FIXTURE ONLY: Kerala announces a new water safety programme",
+            "https://news.example.test/story/kerala-water?utm_medium=feed",
+            "news.example.test",
+            region="INDIA",
+        )],
+        "fixture-batch",
+        now=NOW,
+    )
+    signal = TrendSignal(
+        geo="IN", region="INDIA", query="FIXTURE ONLY: potable water kerala", approx_traffic="100K+",
+        approximate_searches=100_000, started_at=NOW - timedelta(minutes=8),
+        url="https://trends.google.com/trending/rss?geo=IN",
+        news_items=[{"title": "FIXTURE ONLY: State water safety programme", "url": linked_url, "publisher": "Fixture publisher", "snippet": ""}],
+    )
+
+    matches = match_story_to_trends(story, [signal], min_searches=10_000)
+
+    assert len(matches) == 1
+    assert matches[0]["match_strength"] == 1.0
+    assert matches[0]["match_method"] == "google_trends_related_news_url"
+    assert matches[0]["matched_news_item_url"] == "https://news.example.test/story/kerala-water"
+
+
 def test_stale_or_undated_trend_signals_are_not_eligible():
     recent = TrendSignal("IN", "INDIA", "recent", "20K+", 20_000, NOW, "https://example.test/recent")
     stale = TrendSignal("IN", "INDIA", "stale", "20K+", 20_000, NOW - timedelta(hours=25), "https://example.test/stale")
@@ -67,4 +94,5 @@ def test_stale_or_undated_trend_signals_are_not_eligible():
     fresh, excluded_count = fresh_trend_signals([recent, stale, undated], now=NOW)
     assert fresh == [recent]
     assert excluded_count == 2
+
 
