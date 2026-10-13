@@ -88,6 +88,36 @@ def test_trend_related_news_canonical_url_confirms_rewritten_headline():
     assert matches[0]["matched_news_item_url"] == "https://news.example.test/story/kerala-water"
 
 
+def test_generic_single_word_trend_cannot_match_by_keyword_alone():
+    story = build_story(
+        [article("FIXTURE ONLY: Local championship results announced", "https://news.example.test/a", "news.example.test", region="WORLD")],
+        "fixture-batch",
+        now=NOW,
+    )
+    signal = TrendSignal(
+        geo="US", region="WORLD", query="championship", approx_traffic="20K+",
+        approximate_searches=20_000, started_at=NOW - timedelta(minutes=3),
+        url="https://trends.google.com/trends/explore?q=championship",
+    )
+
+    assert match_story_to_trends(story, [signal], min_searches=10_000) == []
+
+
+def test_trend_match_needs_most_query_terms_not_one_common_word():
+    story = build_story(
+        [article("FIXTURE ONLY: Manchester United prepares for a sample fixture", "https://news.example.test/a", "news.example.test", region="WORLD")],
+        "fixture-batch",
+        now=NOW,
+    )
+    signal = TrendSignal(
+        geo="US", region="WORLD", query="Manchester United transfer deadline", approx_traffic="20K+",
+        approximate_searches=20_000, started_at=NOW - timedelta(minutes=3),
+        url="https://trends.google.com/trends/explore?q=manchester+united+transfer+deadline",
+    )
+
+    assert match_story_to_trends(story, [signal], min_searches=10_000) == []
+
+
 def test_stale_or_undated_trend_signals_are_not_eligible():
     recent = TrendSignal("IN", "INDIA", "recent", "20K+", 20_000, NOW, "https://example.test/recent")
     stale = TrendSignal("IN", "INDIA", "stale", "20K+", 20_000, NOW - timedelta(hours=25), "https://example.test/stale")

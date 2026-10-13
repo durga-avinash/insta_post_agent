@@ -6,22 +6,35 @@ from insta_post_agent.editor import LLMConfig, refine_headline_summary, validate
 from insta_post_agent.pipeline import _eligible_review_draft
 from insta_post_agent.models import Article
 from insta_post_agent.scoring import cluster_key
-from insta_post_agent.verification import build_story, compare_reports, source_independence_groups
+from insta_post_agent.verification import build_story, compare_reports, is_trusted_source_domain, source_independence_groups
 
 from test_news_core import NOW, article
 
 
 def test_independent_publishers_approve_and_shared_wire_needs_review():
-    one = article("Fixture research institute publishes a clean energy report", "https://one.example.test/a", "one.example.test", description="A fixture research group released an energy report.")
-    two = article("Fixture clean energy report published by a research institute", "https://two.example.test/b", "two.example.test", description="The synthetic research institute published its clean energy report today.")
+    one = article("Fixture research institute publishes a clean energy report", "https://bbc.com/fixture/a", "bbc.com", description="A fixture research group released an energy report.", source_id="google-news-query")
+    two = article("Fixture clean energy report published by a research institute", "https://reuters.com/fixture/b", "reuters.com", description="The synthetic research institute published its clean energy report today.", source_id="google-news-query")
     story = build_story([one, two], "fixture-batch", now=NOW)
     assert story.verification_status == "APPROVED"
+    assert len({item.independence for item in story.evidence}) == 2
     assert story.event_date == ""  # publication time is not asserted as event date
 
     wire_one = article("Fixture research institute publishes a clean energy report", "https://wire-one.example.test/a", "wire-one.example.test", description="Fixture via Reuters: a research institute published a clean energy report.")
     wire_two = article("Fixture clean energy report published by research institute", "https://wire-two.example.test/b", "wire-two.example.test", description="Fixture via Reuters: a research institute published a clean energy report.")
     assert len(set(source_independence_groups([wire_one, wire_two]).values())) == 1
     assert build_story([wire_one, wire_two], "fixture-batch", now=NOW).verification_status == "NEEDS_REVIEW"
+
+
+def test_automatic_approval_requires_two_curated_trusted_sources():
+    one = article("Fixture research institute publishes a clean energy report", "https://bbc.com/fixture/a", "bbc.com")
+    two = article("Fixture clean energy report published by a research institute", "https://unknown.example.test/b", "unknown.example.test")
+    story = build_story([one, two], "fixture-batch", now=NOW)
+
+    assert is_trusted_source_domain("feeds.bbc.co.uk") is True
+    assert is_trusted_source_domain("www.reuters.com") is True
+    assert is_trusted_source_domain("notreuters.com") is False
+    assert story.verification_status == "NEEDS_REVIEW"
+    assert any("curated trusted publishers" in reason for reason in story.verification_reasons)
 
 
 def test_sensitive_and_insufficient_evidence_gating():

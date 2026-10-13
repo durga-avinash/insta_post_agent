@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections import Counter
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from .models import Article, Evidence, Story
 from .normalize import clean_html_text, normalize_title, stable_id
@@ -20,6 +21,20 @@ WIRE_CUES = {
     "reuters": "wire:reuters",
     "afp": "wire:afp",
 }
+# Only publishers with established editorial standards or primary public-service
+# domains can count toward an automatic APPROVED decision. A new source can still
+# appear in the evidence log, but it remains a human-review source until curated.
+TRUSTED_SOURCE_DOMAINS = frozenset({
+    "apnews.com", "reuters.com", "afp.com", "bbc.com", "bbc.co.uk", "bbc.in",
+    "theguardian.com", "npr.org", "thehindu.com", "indianexpress.com",
+    "hindustantimes.com", "timesofindia.indiatimes.com", "ndtv.com", "indiatoday.in",
+    "scroll.in", "theprint.in", "livemint.com", "moneycontrol.com",
+    "economictimes.indiatimes.com", "nytimes.com", "washingtonpost.com", "wsj.com",
+    "ft.com", "cnn.com", "cbsnews.com", "pbs.org", "nbcnews.com", "abcnews.go.com",
+    "dw.com", "aljazeera.com", "france24.com", "abc.net.au", "cbc.ca", "nhk.or.jp",
+    "espn.com", "espn.in", "espncricinfo.com", "cricbuzz.com",
+    "pib.gov.in", "rbi.org.in", "who.int", "un.org", "europa.eu",
+})
 CLAIM_STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into", "is", "it", "of", "on", "or",
     "says", "the", "to", "with", "after", "amid", "over", "under", "will", "has", "have", "new", "fixture", "only",
@@ -30,26 +45,36 @@ def _core_terms(value: str) -> set[str]:
     return {word for word in re.findall(r"[a-z]{3,}", value.lower()) if word not in CLAIM_STOP_WORDS}
 
 
+def is_trusted_source_domain(value: str) -> bool:
+    host = value.lower().strip().rstrip(".")
+    if "://" in host:
+        host = (urlparse(host).hostname or "").lower().rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in TRUSTED_SOURCE_DOMAINS) or host.endswith((".gov", ".gov.in", ".gov.uk", ".nic.in"))
+
+
+def _article_evidence_key(article: Article) -> str:
+    # One Google News query feed has one source_id even when it contains many
+    # publishers. Count each original publisher article independently instead.
+    return article.canonical_url or article.id or f"{article.source_id}:{article.source_domain}:{article.url}"
+
+
 def source_independence_groups(articles: list[Article]) -> dict[str, str]:
     groups: dict[str, str] = {}
     for article in articles:
         content = f"{article.title} {article.description}".lower()
         wire_group = next((group for cue, group in WIRE_CUES.items() if cue in content), None)
-        if wire_group:
-            groups[article.source_id] = wire_group
-        else:
-            groups[article.source_id] = article.source_domain or article.source_id
+        groups[_article_evidence_key(article)] = wire_group or article.source_domain or article.source_id
     # Identical feed descriptions often indicate cross-posting; do not count them as independent.
     descriptions: dict[str, list[str]] = {}
     for article in articles:
         normalized = re.sub(r"\W+", " ", article.description.lower()).strip()
         if normalized and len(normalized) > 40:
-            descriptions.setdefault(hashlib.sha256(normalized.encode()).hexdigest(), []).append(article.source_id)
+            descriptions.setdefault(hashlib.sha256(normalized.encode()).hexdigest(), []).append(_article_evidence_key(article))
     for ids in descriptions.values():
         if len(ids) > 1:
             shared = "copy:" + stable_id(*sorted(ids))
-            for source_id in ids:
-                groups[source_id] = shared
+            for evidence_key in ids:
+                groups[evidence_key] = shared
     return groups
 
 
@@ -67,7 +92,7 @@ def compare_reports(articles: list[Article]) -> tuple[list[Evidence], list[str],
             Evidence(
                 url=article.url,
                 publisher=article.publisher,
-                independence=groups.get(article.source_id, article.source_domain),
+                independence=groups.get(_article_evidence_key(article), article.source_domain),
                 claims_checked=[
                     "Headline and RSS description retained for comparison",
                     f"Title/description key-term overlap: {len(overlap)} of {len(title_terms)} terms",
@@ -84,11 +109,18 @@ def compare_reports(articles: list[Article]) -> tuple[list[Evidence], list[str],
             item.conflicts_or_uncertainty.append("No source description was available to compare")
     independent_groups = set(groups.values())
     group_count = len(independent_groups)
+    trusted_group_count = len({
+        groups.get(_article_evidence_key(article), article.source_domain)
+        for article in articles
+        if is_trusted_source_domain(article.source_domain)
+    })
     reasons: list[str] = []
     if len({a.source_domain for a in articles}) < 2:
         reasons.append("Only one publisher domain was retrieved for this event")
     if group_count < 2:
         reasons.append("Reports are not independently corroborated (same or suspected syndicated source)")
+    if trusted_group_count < 2:
+        reasons.append("Fewer than two independent reports came from curated trusted publishers or primary public sources")
     if not any(a.description for a in articles):
         reasons.append("Source descriptions are missing; key claims cannot be compared")
     if any(a.published_at is None for a in articles):
@@ -135,7 +167,14 @@ def build_story(articles: list[Article], batch_id: str, now: datetime | None = N
     if len(lead.title) < 18 or any(term in lead.title.lower() for term in reject_terms):
         status = "REJECTED"
         reasons.append("Headline appears to be non-news or promotional content")
-    elif len({item.independence for item in evidence}) < 2 or not any(a.description for a in ordered):
+    elif (
+        len({item.independence for item in evidence}) < 2
+        or len({
+            source_independence_groups(ordered).get(_article_evidence_key(article), article.source_domain)
+            for article in ordered if is_trusted_source_domain(article.source_domain)
+        }) < 2
+        or not any(a.description for a in ordered)
+    ):
         status = "NEEDS_REVIEW"
     elif reasons:
         status = "NEEDS_REVIEW"
@@ -166,3 +205,4 @@ def build_story(articles: list[Article], batch_id: str, now: datetime | None = N
         credibility_score=credibility,
         retrieved_at=max(a.retrieved_at for a in ordered),
     )
+

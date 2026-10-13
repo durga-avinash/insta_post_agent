@@ -134,6 +134,14 @@ def _make_summary(
         slide_count <= MAX_SLIDES
         and all(count <= MAX_STORIES_PER_REGION for count in selected_by_region.values())
     )
+    publication_ready = bool(selected) and all(
+        story.verification_status == "APPROVED" and story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
+        for story in selected
+    )
+    trend_matched_review_needed = any(
+        story.verification_status == "NEEDS_REVIEW" and story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
+        for story in candidates
+    )
     return {
         "batch_date": date_text,
         "candidates_collected": sum(len(s.articles) for s in candidates),
@@ -180,11 +188,9 @@ def _make_summary(
         "excel_validated": workbook_ok,
         "images_layout_valid": text_layout_valid,
         "zip_created": zip_ok,
-        "publication_ready": bool(selected) and all(
-            s.verification_status == "APPROVED" and s.trend_status == "CONFIRMED_GOOGLE_TRENDS" for s in selected
-        ),
-        "human_review_required": any(
-            s.verification_status == "NEEDS_REVIEW" or s.trend_status == "NOT_CONFIRMED_FALLBACK" for s in selected
+        "publication_ready": publication_ready,
+        "human_review_required": trend_matched_review_needed or any(
+            s.verification_status != "APPROVED" or s.trend_status != "CONFIRMED_GOOGLE_TRENDS" for s in selected
         ),
         "trend_selection_mode": (
             "MIXED_TREND_AND_FALLBACK" if any(fallback_by_region.values()) and any(matched_by_region.values())
@@ -193,7 +199,7 @@ def _make_summary(
             else "NO_ELIGIBLE_CONTENT"
         ),
         "content_available": bool(selected),
-        "batch_status": "READY_FOR_REVIEW" if selected else "NO_ELIGIBLE_CONTENT",
+        "batch_status": "READY_FOR_REVIEW" if publication_ready else "NO_PUBLISHABLE_STORIES",
         "workflow_complete": slide_count == len(selected) and slide_limit_respected and workbook_ok and zip_ok and text_layout_valid,
         "history_persistence": history_persistence,
         "warnings": warnings,
@@ -292,14 +298,14 @@ def run_daily(
     if not fresh_articles:
         warnings.append("No recent source items were available; no story content was invented")
     if trend_signals is None and not trend_news_articles and current_trends:
-        warnings.append("Google Trends was available, but its high-volume topics yielded no usable dated Google News RSS coverage")
+        warnings.append("Google Trends was available, but its current topics yielded no usable dated Google News RSS coverage")
     if stale_trend_count:
         warnings.append(f"Ignored {stale_trend_count} undated, stale, or future Google Trends signal(s)")
     failed_trend_feeds = [entry.get("geo", entry.get("source_id", "unknown")) for entry in trend_feed_status if entry.get("status") != "OK"]
     if failed_trend_feeds:
         warnings.append("Google Trends feeds unavailable: " + ", ".join(failed_trend_feeds))
     if not current_trends:
-        warnings.append("No fresh Google Trends evidence was obtained; any newsroom fallback story will be explicitly marked NOT CONFIRMED as trending")
+        warnings.append("No fresh Google Trends evidence was obtained; no story can be selected for a trending carousel")
 
     clusters = cluster_articles(fresh_articles)
     candidates = [build_story(group, batch_id, now=clock) for group in clusters if group]
@@ -314,13 +320,11 @@ def run_daily(
     matched_by_region: dict[str, int] = {}
     fallback_by_region: dict[str, int] = {}
     for region in ("INDIA", "WORLD"):
-        eligible_stories = [
+        recent_stories = [
             story for story in candidates
-            if story.region == region
-            and (story.verification_status == "APPROVED" or _eligible_review_draft(story))
+            if story.region == region and _has_recent_report(story, clock)
         ]
-        eligible_stories = [story for story in eligible_stories if _has_recent_report(story, clock)]
-        confirmed = [story for story in eligible_stories if story.trend_status == "CONFIRMED_GOOGLE_TRENDS"]
+        confirmed = [story for story in recent_stories if story.trend_status == "CONFIRMED_GOOGLE_TRENDS"]
         if not allow_repeat:
             confirmed = [
                 story for story in confirmed
@@ -332,68 +336,49 @@ def run_daily(
                 )
             ]
         matched_by_region[region] = len(confirmed)
-        use_fallback = not confirmed
-        pool = eligible_stories if use_fallback else confirmed
-        if use_fallback:
-            fallback_by_region[region] = 0
-        else:
-            fallback_by_region[region] = 0
-        if use_fallback:
-            pool.sort(
-                key=lambda story: (
-                    story.verification_status == "APPROVED",
-                    len({item.independence for item in story.evidence}),
-                    story.trend_score,
-                    max((article.published_at for article in story.articles if article.published_at), default=clock),
-                ),
-                reverse=True,
-            )
-        else:
-            pool.sort(
-                key=lambda story: (
-                    story.verification_status == "APPROVED",
-                    max(int(item["approximate_searches_lower_bound"]) for item in story.trend_evidence),
-                    len({str(item["geo"]) for item in story.trend_evidence}),
-                    story.trend_score,
-                ),
-                reverse=True,
-            )
+        fallback_by_region[region] = 0
+        pool = [story for story in confirmed if story.verification_status == "APPROVED"]
+        pool.sort(
+            key=lambda story: (
+                max(int(item["approximate_searches_lower_bound"]) for item in story.trend_evidence),
+                len({str(item["geo"]) for item in story.trend_evidence}),
+                story.trend_score,
+            ),
+            reverse=True,
+        )
         kept = 0
-        review_selected = 0
         used_trend_topics: set[str] = set()
         for story in pool:
-            chosen_trend = None if use_fallback else _best_unused_trend_evidence(story, used_trend_topics)
-            if not use_fallback and chosen_trend is None:
+            chosen_trend = _best_unused_trend_evidence(story, used_trend_topics)
+            if chosen_trend is None:
                 continue
             key = cluster_key(story.articles)
             signature = "\n".join(article.title for article in story.articles)
             if not allow_repeat and state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
                 story.freshness_status = "RECENTLY_SELECTED"
                 continue
-            if use_fallback:
-                story.trend_status = "NOT_CONFIRMED_FALLBACK"
-            else:
-                chosen_topic = normalize_title(str(chosen_trend.get("query", "")))
-                used_trend_topics.add(chosen_topic)
-                story.trend_evidence = [chosen_trend] + [item for item in story.trend_evidence if item is not chosen_trend]
+            chosen_topic = normalize_title(str(chosen_trend.get("query", "")))
+            used_trend_topics.add(chosen_topic)
+            story.trend_evidence = [chosen_trend] + [item for item in story.trend_evidence if item is not chosen_trend]
             selected.append(story)
             selected_event_keys.append((key, signature))
             kept += 1
-            if use_fallback:
-                fallback_by_region[region] += 1
-            if story.verification_status == "NEEDS_REVIEW":
-                review_selected += 1
             if kept == MAX_STORIES_PER_REGION:
                 break
         if kept < MAX_STORIES_PER_REGION:
-            if use_fallback and kept:
-                warnings.append(f"{region}: selected {kept} safe newsroom fallback story/stories; Google Trends did not confirm any eligible story in this region")
-            elif not kept:
-                warnings.append(f"{region}: no eligible story was available after evidence and freshness checks")
-            else:
+            if kept:
                 warnings.append(f"{region}: selected {kept} Google Trends-matched story/stories; fewer than {MAX_STORIES_PER_REGION} met the evidence and high-trend requirements")
-        if review_selected:
-            warnings.append(f"{region}: {review_selected} selected slide(s) are NEEDS_REVIEW and require human corroboration before publication")
+            else:
+                review_only = sum(
+                    story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
+                    and story.verification_status == "NEEDS_REVIEW"
+                    and _has_recent_report(story, clock)
+                    for story in recent_stories
+                )
+                detail = f" {review_only} trend-matched candidate(s) needing source review remain in the workbook." if review_only else ""
+                warnings.append(
+                    f"{region}: no story passed both current Google Trends matching and trusted independent-source verification; no slide was generated.{detail}"
+                )
     date_dir = output_root / local_date
     date_dir.mkdir(parents=True, exist_ok=True)
     slide_results = []
@@ -416,7 +401,10 @@ def run_daily(
 
     caption = make_caption(selected)
     if not selected:
-        caption = "No safe fresh story was available for today's Google Trends match or newsroom fallback. Please review the verification manifest."
+        caption = (
+            f"No story passed today's Google Trends and trusted-source checks for {local_date}. "
+            "No carousel post is ready. Review the workbook's News_Master and Verification_Log for candidates."
+        )
     caption_path = date_dir / "carousel_caption.txt"
     caption_path.write_text(caption + "\n", encoding="utf-8")
     workbook_path = date_dir / "Daily_News_Report.xlsx"
@@ -450,7 +438,7 @@ def run_daily(
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; collect dated Google News RSS coverage for the highest-volume fresh Google Trends topics, require a same-region headline or exact related-news URL match and the configured approximate-search floor; use a clearly marked source-backed newsroom fallback only in a region with no qualifying trend match; never exceed three per region",
+            "selection": "separate India and international rankings; select only fresh stories matched to a current same-region Google Trends signal, corroborated by at least two independent curated trusted publishers or primary sources, and free of automated verification flags; do not substitute unconfirmed fallback stories; never exceed three per region",
             "trend_score_note": "Trend scores are internal ranking indicators derived from Google Trends approximate traffic buckets and match strength; only the raw traffic bucket is Google-provided, and its count is approximate.",
         },
         "selected_stories": [
@@ -462,9 +450,7 @@ def run_daily(
                 "trend_status": story.trend_status,
                 "trend_evidence": story.trend_evidence,
                 "selection_reason": (
-                    "No eligible high-trend match was available in this region; this source-backed item is only a newsroom fallback and must not be described as trending."
-                    if story.trend_status == "NOT_CONFIRMED_FALLBACK"
-                    else "Matched a fresh Google Trends signal; the verification status above still controls whether human review is required."
+                    "Matched a fresh Google Trends signal and passed automated trusted-source corroboration; the editor still reviews source links before manual publication."
                 ),
             }
             for story in selected
@@ -476,14 +462,14 @@ def run_daily(
             "The publication timestamp is not presented as an event date; event date stays blank unless explicitly supplied by a later verified source.",
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
             "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
-            "A newsroom fallback is not search-trend verified and must not be labeled trending; a human editor must check the original reports before publication.",
+            "Only stories with a current Google Trends match and at least two independent curated trusted sources are included as slides; no fallback story is presented as trending.",
         ],
     }
     manifest_path = date_dir / "verification_manifest.json"
     _write_json(manifest_path, manifest)
 
     if not selected:
-        warnings.append("No safe, fresh source-backed story was available for either the Google Trends selection or newsroom fallback")
+        warnings.append("The daily report and ZIP are available, but no slide met the trending and verification requirements")
     content_paths = [workbook_path, caption_path, manifest_path]
     content_paths.extend(date_dir / str(item["path"]).split("\\")[-1].split("/")[-1] for item in slide_results)
     zip_path = date_dir / "content_package.zip"

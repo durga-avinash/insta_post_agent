@@ -21,7 +21,7 @@ GOOGLE_TRENDS_NAMESPACE = "https://trends.google.com/trending/rss"
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into", "is", "it", "of",
     "on", "or", "the", "to", "with", "after", "amid", "over", "under", "will", "has", "have",
-    "new", "news", "live", "today", "latest", "update", "updates", "vs", "versus",
+    "new", "news", "live", "today", "latest", "update", "updates", "vs", "versus", "fixture", "only",
 }
 
 
@@ -226,7 +226,12 @@ def _match_strength(query: str, candidate: str) -> float:
             return 0.0
     else:
         left_tokens, right_tokens = _tokens(left), _tokens(right)
-        if left in right or right in left:
+        # A broad one-word trend such as "girls" or "championship" is not enough
+        # to establish that an article is about the searched event. Exact related-
+        # news URL evidence is handled separately below.
+        if len(left_tokens) < 2:
+            return 0.0
+        if left in right:
             return 1.0
     overlap = left_tokens & right_tokens
     if not overlap:
@@ -237,7 +242,7 @@ def _match_strength(query: str, candidate: str) -> float:
     precision = len(overlap) / max(1, len(right_tokens))
     sequence = SequenceMatcher(None, left, right).ratio()
     score = 0.78 * recall + 0.22 * precision
-    if len(overlap) < 2 or recall < 0.5:
+    if len(overlap) < 2 or recall < 0.67:
         return 0.0
     return min(0.99, max(score, sequence * 0.85))
 
@@ -252,7 +257,10 @@ def match_story_to_trends(story: Story, signals: list[TrendSignal], *, min_searc
             continue
         if signal.approximate_searches is None or signal.approximate_searches < min_searches:
             continue
-        aliases = [signal.query, *(item.get("title", "") for item in signal.news_items)]
+        # Text matching uses the Trends query itself. Related publisher headlines
+        # are useful for exact URL corroboration, but using them as loose aliases
+        # can make unrelated stories look trending just because they share a word.
+        aliases = [signal.query]
         best = (0.0, "", "", "headline_text_similarity", "")
         for alias in aliases:
             if not alias:

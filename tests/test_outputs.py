@@ -22,12 +22,12 @@ from test_news_core import NOW, article
 
 def fixture_story(title: str, region: str, slug: str, now=NOW):
     first = article(
-        title, f"https://desk-a.example.test/{slug}", "desk-a.example.test",
+        title, f"https://bbc.com/fixture/{slug}", "bbc.com",
         description=f"FIXTURE ONLY: A synthetic classroom report about {slug.replace('-', ' ')} offers context for testing.",
         region=region, published_at=now - timedelta(minutes=12), source_id="desk-a",
     )
     second = article(
-        title.replace("FIXTURE ONLY:", "FIXTURE ONLY: New details on"), f"https://desk-b.example.test/{slug}", "desk-b.example.test",
+        title.replace("FIXTURE ONLY:", "FIXTURE ONLY: New details on"), f"https://reuters.com/fixture/{slug}", "reuters.com",
         description=f"FIXTURE ONLY: A separate imaginary desk describes {slug.replace('-', ' ')} in a test fixture.",
         region=region, published_at=now - timedelta(minutes=9), source_id="desk-b",
     )
@@ -195,7 +195,7 @@ def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch
     assert summary["slide_limit_respected"] is True
 
 
-def test_no_trend_match_uses_labeled_source_backed_fallback(tmp_path, monkeypatch):
+def test_no_trend_match_never_places_a_fallback_story_in_the_carousel(tmp_path, monkeypatch):
     records = [
         article(
             "FIXTURE ONLY: Local library opens a community reading room",
@@ -224,11 +224,11 @@ def test_no_trend_match_uses_labeled_source_backed_fallback(tmp_path, monkeypatc
     date_dir = tmp_path / "output" / "2026-10-13"
 
     assert summary["workflow_complete"] is True
-    assert summary["batch_status"] == "READY_FOR_REVIEW"
-    assert summary["trend_selection_mode"] == "NEWSROOM_FALLBACK_UNCONFIRMED"
-    assert summary["images_generated"] == 2
-    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 1}
-    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 1, "WORLD": 1}
+    assert summary["batch_status"] == "NO_PUBLISHABLE_STORIES"
+    assert summary["trend_selection_mode"] == "NO_ELIGIBLE_CONTENT"
+    assert summary["images_generated"] == 0
+    assert summary["selected_by_region"] == {"INDIA": 0, "WORLD": 0}
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
     assert summary["publication_ready"] is False
     assert summary["zip_created"] is True
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
@@ -236,8 +236,8 @@ def test_no_trend_match_uses_labeled_source_backed_fallback(tmp_path, monkeypatc
         assert "Daily_News_Report.xlsx" in names
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
-        assert sum(name.endswith(".png") for name in names) == 2
-    assert "TREND UNCONFIRMED" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+        assert sum(name.endswith(".png") for name in names) == 0
+    assert "No story passed today's Google Trends and trusted-source checks" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
 
 
 def test_trend_volume_threshold_must_be_positive(tmp_path):
@@ -263,7 +263,7 @@ def test_recent_event_history_prevents_duplicate_daily_selection(tmp_path):
     state.close()
 
 
-def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_sources_exist(tmp_path, monkeypatch):
+def test_pipeline_keeps_unverified_untrended_stories_out_of_carousel(tmp_path, monkeypatch):
     fixtures = [
         ("INDIA", "FIXTURE ONLY: City library opens community reading room", "A city library opens a community reading room today for local readers."),
         ("INDIA", "FIXTURE ONLY: Rural clinics pilot appointment calendar", "Rural clinics pilot an appointment calendar today for local visits."),
@@ -297,27 +297,25 @@ def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_source
     )
     date_dir = tmp_path / "output" / "2026-10-13"
     assert summary["workflow_complete"] is True
-    assert summary["images_generated"] == 6
+    assert summary["images_generated"] == 0
     assert summary["stories_approved"] == 0
-    assert summary["stories_selected_needs_review"] == 6
-    assert summary["human_review_required"] is True
+    assert summary["stories_selected_needs_review"] == 0
+    assert summary["human_review_required"] is False
     assert summary["publication_ready"] is False
-    assert summary["trend_selection_mode"] == "NEWSROOM_FALLBACK_UNCONFIRMED"
-    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 3, "WORLD": 3}
+    assert summary["trend_selection_mode"] == "NO_ELIGIBLE_CONTENT"
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
     assert summary["excel_validated"] is True
-    assert sum(1 for image in date_dir.glob("slide_*.png")) == 6
+    assert sum(1 for image in date_dir.glob("slide_*.png")) == 0
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
         names = set(archive.namelist())
         assert "Daily_News_Report.xlsx" in names
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
-        assert sum(name.endswith(".png") for name in names) == 6
+        assert sum(name.endswith(".png") for name in names) == 0
     caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
-    assert "Review draft" in caption
-    assert caption.count("[NEEDS_REVIEW]") == 6
+    assert "No story passed today's Google Trends and trusted-source checks" in caption
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["selected_stories"]) == 6
-    assert all(story["human_review_required"] for story in manifest["selected_stories"])
+    assert manifest["selected_stories"] == []
 
 
 def test_caption_keeps_six_story_urls_under_target_length():
