@@ -4,13 +4,18 @@ from .models import Story
 
 
 def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
-    intro = "Today's news, with the source links kept close."
-    closing = "A concise daily brief. Please read the linked reporting for full context."
+    has_review_items = any(story.verification_status == "NEEDS_REVIEW" for story in stories)
+    if has_review_items:
+        intro = "Review draft: NEEDS_REVIEW stories are not independently corroborated. Check each linked report before publication."
+        closing = "Read the original sources for full context before manually publishing."
+    else:
+        intro = "Today's news, with the source links kept close."
+        closing = "A concise daily brief. Please read the linked reporting for full context."
     hashtags = "#IndiaNews #WorldNews #DailyBrief"
     fixed: list[str] = []
     summaries: list[str] = []
     for index, story in enumerate(stories, start=1):
-        fixed.append(f"{index}. {story.headline}\nSource: {story.publisher}\n{story.original_url}")
+        fixed.append(f"{index}. [{story.verification_status}] {story.headline}\nSource: {story.publisher}\n{story.original_url}")
         summaries.append(story.summary)
     fixed_text_len = sum(len(section) for section in fixed) + max(0, len(fixed) - 1) * 2
     reserve = len(intro) + len(closing) + len(hashtags) + 8
@@ -29,3 +34,4 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[:max_chars]
+
