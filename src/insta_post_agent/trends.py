@@ -12,9 +12,9 @@ from pathlib import Path
 
 import requests
 
-from .models import Story, TrendFeed, TrendSignal
-from .normalize import canonicalize_url, normalize_timestamp, normalize_title
-from .collector import feed_error_detail, make_session
+from .models import Article, FeedSource, Story, TrendFeed, TrendSignal
+from .normalize import canonicalize_url, normalize_timestamp, normalize_title, stable_id
+from .collector import feed_error_detail, make_session, parse_feed_content
 
 LOGGER = logging.getLogger(__name__)
 GOOGLE_TRENDS_NAMESPACE = "https://trends.google.com/trending/rss"
@@ -127,6 +127,77 @@ def collect_trend_signals(
     return signals, status
 
 
+def collect_trend_news_articles(
+    signals: list[TrendSignal],
+    *,
+    min_searches: int = 10_000,
+    max_queries_per_geo: int = 10,
+    max_items_per_query: int = 8,
+    session: requests.Session | None = None,
+    retrieved_at: datetime | None = None,
+    min_delay_seconds: float = 0.25,
+) -> tuple[list[Article], list[dict[str, str]]]:
+    """Collect dated publisher RSS coverage for current, high-volume trend topics."""
+    if max_queries_per_geo < 1 or max_items_per_query < 1:
+        raise ValueError("Trend news query and item limits must be positive")
+    client = session or make_session()
+    clock = retrieved_at or datetime.now(timezone.utc)
+    locale = {
+        "IN": ("INDIA", "en-IN", "IN", "IN:en"),
+        "US": ("WORLD", "en-US", "US", "US:en"),
+        "GB": ("WORLD", "en-GB", "GB", "GB:en"),
+    }
+    selected: list[TrendSignal] = []
+    by_geo: dict[str, list[TrendSignal]] = {}
+    for signal in signals:
+        if signal.approximate_searches is None or signal.approximate_searches < min_searches or signal.started_at is None:
+            continue
+        if signal.geo not in locale:
+            continue
+        by_geo.setdefault(signal.geo, []).append(signal)
+    for geo, group in by_geo.items():
+        group.sort(key=lambda signal: (signal.approximate_searches or 0, signal.started_at or clock), reverse=True)
+        seen: set[str] = set()
+        for signal in group:
+            key = normalize_title(signal.query)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            selected.append(signal)
+            if len(seen) >= max_queries_per_geo:
+                break
+
+    articles: list[Article] = []
+    status: list[dict[str, str]] = []
+    for index, signal in enumerate(selected):
+        if index and min_delay_seconds > 0:
+            time.sleep(min_delay_seconds)
+        region, language, country, edition = locale[signal.geo]
+        source = FeedSource(
+            id=f"google-news-trend-{signal.geo.lower()}-{stable_id(normalize_title(signal.query))}",
+            name=f"Google News RSS ({signal.geo}: {signal.query})",
+            url="https://news.google.com/rss/search",
+            region=region,  # type: ignore[arg-type]
+            section="Trending news search",
+            source_type="google_news_search",
+        )
+        try:
+            response = client.get(
+                source.url,
+                params={"q": signal.query, "hl": language, "gl": country, "ceid": edition},
+                timeout=(8, 20),
+            )
+            response.raise_for_status()
+            found = parse_feed_content(source, response.content, retrieved_at=clock, max_items=max_items_per_query)
+            articles.extend(found)
+            status.append({"geo": signal.geo, "query": signal.query, "status": "OK", "items": str(len(found))})
+        except (requests.RequestException, ValueError, UnicodeError) as exc:
+            detail = feed_error_detail(exc)
+            LOGGER.warning("Trend news query %s (%s) failed: %s", signal.geo, signal.query, detail)
+            status.append({"geo": signal.geo, "query": signal.query, "status": "FAILED", "items": "0", "error": detail})
+    return articles, status
+
+
 def fresh_trend_signals(signals: list[TrendSignal], *, now: datetime, max_age_hours: int = 24) -> tuple[list[TrendSignal], int]:
     clock = now.astimezone(timezone.utc)
     cutoff = clock - timedelta(hours=max_age_hours)
@@ -172,6 +243,7 @@ def _match_strength(query: str, candidate: str) -> float:
 def match_story_to_trends(story: Story, signals: list[TrendSignal], *, min_searches: int = 10_000) -> list[dict[str, object]]:
     """Match a story only to real, dated, volume-bearing search trends for the same region."""
     documents = [story.headline, *(article.title for article in story.articles)]
+    documents.extend(article.description for article in story.articles if article.description.strip())
     matched: list[dict[str, object]] = []
     for signal in signals:
         if signal.region != story.region or signal.started_at is None:

@@ -19,7 +19,14 @@ from .scoring import cluster_articles, cluster_key, deduplicate_articles
 from .sources import load_sources
 from .verification import build_story
 from .workbook import create_workbook, validate_workbook
-from .trends import apply_trend_evidence, collect_trend_signals, fresh_trend_signals, load_trend_feeds, match_story_to_trends
+from .trends import (
+    apply_trend_evidence,
+    collect_trend_news_articles,
+    collect_trend_signals,
+    fresh_trend_signals,
+    load_trend_feeds,
+    match_story_to_trends,
+)
 
 LOGGER = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
@@ -99,6 +106,8 @@ def _make_summary(
     fallback_by_region: dict[str, int],
     trends_collected: int,
     fresh_trends: int,
+    trend_news_articles_collected: int,
+    trend_news_feed_status: list[dict[str, str]],
 ) -> dict[str, object]:
     slide_count = len(slide_results)
     selected_by_region = {
@@ -125,6 +134,8 @@ def _make_summary(
         "minimum_google_trends_searches": min_trend_searches,
         "google_trend_signals_collected": trends_collected,
         "google_trend_signals_fresh": fresh_trends,
+        "trend_news_articles_collected": trend_news_articles_collected,
+        "google_trend_news_feed_status": trend_news_feed_status,
         "matched_trends_by_region": matched_by_region,
         "unconfirmed_fallbacks_by_region": fallback_by_region,
         "selected_story_status": [
@@ -221,19 +232,7 @@ def run_daily(
         }
     sources = sources if sources is not None else load_sources(sources_path or root / "config" / "sources.json")
     raw_articles, feed_status = collect_sources(sources, max_items=per_feed, session=feed_client)
-    articles = deduplicate_articles(raw_articles)
-    fresh_articles, stale_count, future_count = _fresh_articles(articles, clock, max_age)
     warnings: list[str] = []
-    if stale_count:
-        warnings.append(f"Ignored {stale_count} candidate articles older than the {max_age}-hour freshness window")
-    if future_count:
-        warnings.append(f"Ignored {future_count} articles with publication timestamps more than 10 minutes in the future")
-    failed_feeds = [entry["source_id"] for entry in feed_status if entry["status"] != "OK"]
-    if failed_feeds:
-        warnings.append("Feeds unavailable: " + ", ".join(failed_feeds))
-    if not fresh_articles:
-        warnings.append("No recent source items were available; no story content was invented")
-
     if trend_signals is None:
         trend_feeds = load_trend_feeds(root / "config" / "trend_sources.json")
         raw_trends, trend_feed_status = collect_trend_signals(trend_feeds, session=feed_client)
@@ -241,6 +240,44 @@ def run_daily(
         raw_trends = trend_signals
         trend_feed_status = [{"source_id": "injected", "status": "OK", "items": str(len(raw_trends))}]
     current_trends, stale_trend_count = fresh_trend_signals(raw_trends, now=clock, max_age_hours=24)
+    if trend_signals is None:
+        try:
+            max_trend_queries = int(os.getenv("NEWS_TREND_QUERIES_PER_GEO", "10"))
+        except ValueError as exc:
+            raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number") from exc
+        if max_trend_queries < 1:
+            raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number")
+        trend_news_articles, trend_news_feed_status = collect_trend_news_articles(
+            current_trends,
+            min_searches=min_searches,
+            max_queries_per_geo=max_trend_queries,
+            session=feed_client,
+            retrieved_at=clock,
+        )
+    else:
+        # Injected trend fixtures keep unit tests deterministic and network-free.
+        trend_news_articles, trend_news_feed_status = [], []
+    raw_articles.extend(trend_news_articles)
+    articles = deduplicate_articles(raw_articles)
+    fresh_articles, stale_count, future_count = _fresh_articles(articles, clock, max_age)
+    if stale_count:
+        warnings.append(f"Ignored {stale_count} candidate articles older than the {max_age}-hour freshness window")
+    if future_count:
+        warnings.append(f"Ignored {future_count} articles with publication timestamps more than 10 minutes in the future")
+    failed_feeds = [entry["source_id"] for entry in feed_status if entry["status"] != "OK"]
+    if failed_feeds:
+        warnings.append("Feeds unavailable: " + ", ".join(failed_feeds))
+    failed_trend_searches = [
+        entry.get("geo", "unknown") + ": " + entry.get("query", "")
+        for entry in trend_news_feed_status
+        if entry.get("status") != "OK"
+    ]
+    if failed_trend_searches:
+        warnings.append("Google News trend searches unavailable: " + "; ".join(failed_trend_searches[:8]))
+    if not fresh_articles:
+        warnings.append("No recent source items were available; no story content was invented")
+    if trend_signals is None and not trend_news_articles and current_trends:
+        warnings.append("Google Trends was available, but its high-volume topics yielded no usable dated Google News RSS coverage")
     if stale_trend_count:
         warnings.append(f"Ignored {stale_trend_count} undated, stale, or future Google Trends signal(s)")
     failed_trend_feeds = [entry.get("geo", entry.get("source_id", "unknown")) for entry in trend_feed_status if entry.get("status") != "OK"]
@@ -373,12 +410,14 @@ def run_daily(
         "selected_news_ids": [story.news_id for story in selected],
         "feed_status": feed_status,
         "google_trends_feed_status": trend_feed_status,
+        "google_trend_news_feed_status": trend_news_feed_status,
+        "trend_news_articles_collected": len(trend_news_articles),
         "google_trend_signals": [signal.to_dict() for signal in current_trends],
         "ranking": {
             "components": {
                 "google_trends_approximate_searches": "lower bound from Google Trends RSS traffic bucket; not an exact count",
                 "trend_geographies": "number of configured Google Trends locations reporting the query",
-                "headline_match_strength": "transparent token/phrase similarity between source headlines and the query or its associated news headlines",
+                "headline_match_strength": "transparent token/phrase similarity between source headlines and a fresh Google Trends query or dated Google News RSS coverage for that query; exact related-news URL matches are also accepted",
             },
             "minimum_google_trends_searches": min_searches,
             "matched_by_region": matched_by_region,
@@ -388,7 +427,7 @@ def run_daily(
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; a trend-confirmed slide must match a dated Google Trends RSS query or its associated news headline and meet the configured approximate-search floor; use a clearly marked source-backed newsroom fallback only in a region with no qualifying trend match; never exceed three per region",
+            "selection": "separate India and international rankings; collect dated Google News RSS coverage for the highest-volume fresh Google Trends topics, require a same-region headline or exact related-news URL match and the configured approximate-search floor; use a clearly marked source-backed newsroom fallback only in a region with no qualifying trend match; never exceed three per region",
             "trend_score_note": "Trend scores are internal ranking indicators derived from Google Trends approximate traffic buckets and match strength; only the raw traffic bucket is Google-provided, and its count is approximate.",
         },
         "selected_stories": [
@@ -413,6 +452,7 @@ def run_daily(
             "RSS summaries do not establish all underlying facts. Sensitive topics and conflicts require human review.",
             "The publication timestamp is not presented as an event date; event date stays blank unless explicitly supplied by a later verified source.",
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
+            "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
             "A newsroom fallback is not search-trend verified and must not be labeled trending; a human editor must check the original reports before publication.",
         ],
     }
@@ -437,6 +477,7 @@ def run_daily(
         text_layout_valid=not any(bool(item.get("text_overflow")) for item in slide_results),
         min_trend_searches=min_searches, matched_by_region=matched_by_region,
         fallback_by_region=fallback_by_region, trends_collected=len(raw_trends), fresh_trends=len(current_trends),
+        trend_news_articles_collected=len(trend_news_articles), trend_news_feed_status=trend_news_feed_status,
     )
     reason_counts = Counter(reason for story in candidates for reason in story.verification_reasons)
     summary["top_verification_flags"] = [
@@ -452,8 +493,8 @@ def run_daily(
         state.mark_batch_completed(batch_id, summary, now=clock)
     state.close()
     LOGGER.info(
-        "Batch %s: %s articles, %s clusters, %s fresh Google Trends signals, %s approved, %s slides (%s)",
-        batch_id, len(articles), len(candidates), len(current_trends), summary["stories_approved"], len(slide_results), summary["trend_selection_mode"],
+        "Batch %s: %s articles, %s clusters, %s fresh Google Trends signals, %s trend-search articles, %s approved, %s slides (%s)",
+        batch_id, len(articles), len(candidates), len(current_trends), len(trend_news_articles), summary["stories_approved"], len(slide_results), summary["trend_selection_mode"],
     )
     return summary
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from insta_post_agent.models import TrendFeed, TrendSignal
 from insta_post_agent.trends import (
     apply_trend_evidence,
+    collect_trend_news_articles,
     fresh_trend_signals,
     match_story_to_trends,
     parse_approximate_searches,
@@ -94,5 +95,49 @@ def test_stale_or_undated_trend_signals_are_not_eligible():
     fresh, excluded_count = fresh_trend_signals([recent, stale, undated], now=NOW)
     assert fresh == [recent]
     assert excluded_count == 2
+
+
+def test_trend_search_collects_only_high_volume_queries_and_keeps_publisher_metadata():
+    fixture = Path(__file__).parent / "fixtures" / "google_news_search.xml"
+    content = fixture.read_bytes()
+
+    class Response:
+        def __init__(self):
+            self.content = content
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, *, params, timeout):
+            self.calls.append((url, params, timeout))
+            return Response()
+
+    session = Session()
+    signals = [
+        TrendSignal("IN", "INDIA", "FIXTURE ONLY: Indian election result", "100K+", 100_000, NOW - timedelta(minutes=4), "https://trends.example.test/in"),
+        TrendSignal("IN", "INDIA", "FIXTURE ONLY: low volume query", "2K+", 2_000, NOW - timedelta(minutes=3), "https://trends.example.test/low"),
+    ]
+
+    articles, status = collect_trend_news_articles(
+        signals,
+        session=session,
+        retrieved_at=NOW,
+        max_queries_per_geo=3,
+        min_delay_seconds=0,
+    )
+
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == "https://news.google.com/rss/search"
+    assert session.calls[0][1] == {"q": "FIXTURE ONLY: Indian election result", "hl": "en-IN", "gl": "IN", "ceid": "IN:en"}
+    assert len(articles) == 1
+    assert articles[0].publisher == "Fixture News Publisher"
+    assert articles[0].source_domain == "fixture-publisher.example.test"
+    assert articles[0].source_type == "google_news_search"
+    assert articles[0].published_at == NOW - timedelta(minutes=2)
+    assert status == [{"geo": "IN", "query": "FIXTURE ONLY: Indian election result", "status": "OK", "items": "1"}]
 
 

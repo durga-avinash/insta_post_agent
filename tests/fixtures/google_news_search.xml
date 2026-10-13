@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture Google News RSS Search</title>
+    <item>
+      <title>FIXTURE ONLY: Indian election result brings new coalition talks</title>
+      <link>https://news.google.com/rss/articles/FIXTURE_ONLY_TOKEN</link>
+      <guid isPermaLink="false">fixture-google-news-article</guid>
+      <pubDate>Tue, 13 Oct 2026 03:28:00 GMT</pubDate>
+      <source url="https://fixture-publisher.example.test/news/">Fixture News Publisher</source>
+      <description>FIXTURE ONLY: A synthetic report says coalition talks began after the election result.</description>
+    </item>
+  </channel>
+</rss>
+

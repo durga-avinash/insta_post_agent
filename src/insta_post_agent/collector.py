@@ -86,14 +86,25 @@ def parse_feed_content(
         if not summary_raw and entry.get("content"):
             summary_raw = str(entry.content[0].get("value", ""))
         description = clean_html_text(summary_raw)
-        domain = urlsplit(canonical).hostname or ""
-        article_id = stable_id(source.id, str(entry.get("id", "")) or canonical)
+        publisher = source.name
+        source_domain = urlsplit(canonical).hostname or ""
+        source_id = source.id
+        if source.source_type == "google_news_search":
+            publisher_metadata = entry.get("source") or {}
+            publisher_title = clean_html_text(str(publisher_metadata.get("title", "")))
+            publisher_url = str(publisher_metadata.get("href", "") or publisher_metadata.get("url", ""))
+            publisher_domain = urlsplit(publisher_url).hostname or ""
+            publisher = publisher_title or source.name
+            source_domain = publisher_domain or source_domain
+            # Preserve separate publisher identities within Google News search results.
+            source_id = f"{source.id}:{source_domain or publisher.casefold()}"
+        article_id = stable_id(source_id, str(entry.get("id", "")) or canonical)
         region = classify_region(source.region, title, description)
         articles.append(
             Article(
                 id=article_id,
                 title=title,
-                publisher=source.name,
+                publisher=publisher,
                 url=link,
                 canonical_url=canonical,
                 published_at=_entry_timestamp(entry),
@@ -101,9 +112,9 @@ def parse_feed_content(
                 region=region,  # type: ignore[arg-type]
                 category=classify_category(title, description),
                 description=description,
-                source_id=source.id,
+                source_id=source_id,
                 source_type=source.source_type,
-                source_domain=domain,
+                source_domain=source_domain,
             )
         )
     return articles
@@ -133,3 +144,4 @@ def collect_sources(
             LOGGER.warning("Feed %s failed: %s", source.id, detail)
             feed_status.append({"source_id": source.id, "status": "FAILED", "items": "0", "error": detail})
     return articles, feed_status
+
