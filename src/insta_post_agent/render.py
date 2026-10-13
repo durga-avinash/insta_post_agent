@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import textwrap
-from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -39,6 +37,25 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_w
     lines: list[str] = []
     current = ""
     for word in words:
+        # RSS titles occasionally contain an unbroken token. Split those safely
+        # instead of allowing a single line to run beyond the canvas.
+        if draw.textlength(word, font=font) > max_width:
+            if current:
+                lines.append(current)
+                current = ""
+            remainder = word
+            while draw.textlength(remainder, font=font) > max_width:
+                low, high = 1, len(remainder)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if draw.textlength(remainder[:middle], font=font) <= max_width:
+                        low = middle
+                    else:
+                        high = middle - 1
+                lines.append(remainder[:low])
+                remainder = remainder[low:]
+            current = remainder
+            continue
         candidate = f"{current} {word}".strip()
         if current and draw.textlength(candidate, font=font) > max_width:
             lines.append(current)
@@ -48,6 +65,13 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_w
     if current:
         lines.append(current)
     return lines or [""]
+
+
+def _ellipsis(draw: ImageDraw.ImageDraw, line: str, font: ImageFont.ImageFont, max_width: int) -> str:
+    result = line.rstrip()
+    while result and draw.textlength(result + "…", font=font) > max_width:
+        result = result[:-1].rstrip()
+    return result + "…"
 
 
 def _draw_illustration(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], category: str, index: int) -> None:
@@ -112,14 +136,23 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
         draw.rounded_rectangle((626, 157, 1006, 202), radius=19, fill="#A84A3F")
         draw.text((650, 166), "NEEDS HUMAN REVIEW", font=_font(19, True), fill=PAPER)
 
-    title_font = _font(56, True)
+    title_font_size = 56
+    title_font = _font(title_font_size, True)
     lines = _wrap(draw, story.headline, title_font, 925)
-    while len(lines) > 4 and title_font.size > 40:
-        title_font = _font(title_font.size - 3, True)
+    while (len(lines) > 5 or len(lines) * (title_font_size + 12) > 250) and title_font_size > 32:
+        title_font_size = max(32, title_font_size - 2)
+        title_font = _font(title_font_size, True)
         lines = _wrap(draw, story.headline, title_font, 925)
+    headline_truncated = len(lines) > 5
+    if headline_truncated:
+        lines = lines[:5]
+        lines[-1] = _ellipsis(draw, lines[-1], title_font, 925)
     title_y = 230
-    line_height = title_font.size + 16
-    for line in lines[:4]:
+    line_height = title_font_size + 12
+    title_overflow = False
+    for line in lines:
+        bbox = draw.textbbox((74, title_y), line, font=title_font)
+        title_overflow = title_overflow or bbox[2] > 999 or bbox[3] > 482
         draw.text((74, title_y), line, font=title_font, fill=INK)
         title_y += line_height
 
@@ -128,12 +161,24 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
     _draw_illustration(draw, (74, illustration_top, 1006, illustration_bottom), story.category, slide_number)
     draw.text((104, illustration_top + 25), "ILLUSTRATION", font=_font(17, True), fill=MUTED)
 
-    summary_font = _font(27)
+    summary_font_size = 26
+    summary_font = _font(summary_font_size)
     summary_lines = _wrap(draw, story.summary, summary_font, 910)
+    while (len(summary_lines) > 4 or len(summary_lines) * (summary_font_size + 7) > 120) and summary_font_size > 21:
+        summary_font_size -= 1
+        summary_font = _font(summary_font_size)
+        summary_lines = _wrap(draw, story.summary, summary_font, 910)
+    summary_truncated = len(summary_lines) > 4
+    if summary_truncated:
+        summary_lines = summary_lines[:4]
+        summary_lines[-1] = _ellipsis(draw, summary_lines[-1], summary_font, 910)
     summary_y = 1045
-    for line in summary_lines[:3]:
+    summary_overflow = False
+    for line in summary_lines:
+        bbox = draw.textbbox((74, summary_y), line, font=summary_font)
+        summary_overflow = summary_overflow or bbox[2] > 984 or bbox[3] > 1175
         draw.text((74, summary_y), line, font=summary_font, fill=INK)
-        summary_y += 38
+        summary_y += summary_font_size + 7
     source_date = story.articles[0].published_at.date().isoformat() if story.articles and story.articles[0].published_at else "date unavailable"
     footer_y = max(1185, summary_y + 16)
     draw.line((74, footer_y, 1006, footer_y), fill="#C9C2B4", width=2)
@@ -150,7 +195,9 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
         "path": str(output_path),
         "width": WIDTH,
         "height": HEIGHT,
-        "text_overflow": len(lines) > 4 or len(summary_lines) > 3,
+        "text_overflow": title_overflow or summary_overflow,
+        "headline_truncated": headline_truncated,
+        "summary_truncated": summary_truncated,
         "review_badge": story.verification_status == "NEEDS_REVIEW",
     }
 
