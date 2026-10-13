@@ -42,7 +42,7 @@ def test_slide_dimensions_layout_workbook_and_caption_links(tmp_path):
     story.caption = f"{story.headline} {story.original_url}"
     caption = make_caption([story])
     assert story.original_url in caption
-    assert "1. FIXTURE ONLY" in caption
+    assert "1. [APPROVED] FIXTURE ONLY" in caption
     workbook_path = tmp_path / "Daily_News_Report.xlsx"
     create_workbook(workbook_path, [story], [story], "fixture-batch", "2026-10-13")
     assert validate_workbook(workbook_path)
@@ -104,6 +104,54 @@ def test_recent_event_history_prevents_duplicate_daily_selection(tmp_path):
     state.close()
 
 
+def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_sources_exist(tmp_path, monkeypatch):
+    fixtures = [
+        ("INDIA", "FIXTURE ONLY: City library opens community reading room", "A city library opens a community reading room today for local readers."),
+        ("INDIA", "FIXTURE ONLY: Rural clinics pilot appointment calendar", "Rural clinics pilot an appointment calendar today for local visits."),
+        ("INDIA", "FIXTURE ONLY: Solar lab shares battery efficiency report", "A solar lab shares a battery efficiency report with local researchers."),
+        ("WORLD", "FIXTURE ONLY: Coastal schools publish flood learning map", "Coastal schools publish a flood learning map to explain local planning."),
+        ("WORLD", "FIXTURE ONLY: Museum archives start public digitization program", "Museum archives start a public digitization program for historic records."),
+        ("WORLD", "FIXTURE ONLY: Island transit tests electric ferry timetable", "Island transit tests an electric ferry timetable for local commuters."),
+    ]
+    records = [
+        article(
+            title,
+            f"https://single-source-{index}.example.test/{index}",
+            f"single-source-{index}.example.test",
+            description=description,
+            region=region,
+            source_id=f"single-source-{index}",
+        )
+        for index, (region, title, description) in enumerate(fixtures)
+    ]
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: (records, [{"source_id": "fixture", "status": "OK", "items": str(len(records))}]),
+    )
+    summary = run_daily(
+        root=Path.cwd(),
+        output_root=tmp_path / "output",
+        history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW,
+        sources=[],
+    )
+    date_dir = tmp_path / "output" / "2026-10-13"
+    assert summary["workflow_complete"] is True
+    assert summary["images_generated"] == 6
+    assert summary["stories_approved"] == 0
+    assert summary["stories_selected_needs_review"] == 6
+    assert summary["human_review_required"] is True
+    assert summary["publication_ready"] is False
+    assert summary["excel_validated"] is True
+    assert sum(1 for image in date_dir.glob("slide_*.png")) == 6
+    caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+    assert "Review draft" in caption
+    assert caption.count("[NEEDS_REVIEW]") == 6
+    manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["selected_stories"]) == 6
+    assert all(story["human_review_required"] for story in manifest["selected_stories"])
+
+
 def test_caption_keeps_six_story_urls_under_target_length():
     stories = [fixture_story(f"FIXTURE ONLY: headline number {n} has a short synthetic description", "WORLD", f"story-{n}") for n in range(1, 7)]
     for index, story in enumerate(stories):
@@ -111,3 +159,4 @@ def test_caption_keeps_six_story_urls_under_target_length():
     caption = make_caption(stories)
     assert len(caption) <= 2200
     assert all(story.original_url in caption for story in stories)
+
