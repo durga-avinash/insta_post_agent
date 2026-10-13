@@ -62,7 +62,8 @@ class NewsHistory:
     def mark_batch_completed(self, batch_id: str, summary: dict, *, now: datetime | None = None) -> None:
         timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
         self.connection.execute(
-            "INSERT OR IGNORE INTO completed_batches(batch_id, completed_at, summary_json) VALUES (?, ?, ?)",
+            "INSERT INTO completed_batches(batch_id, completed_at, summary_json) VALUES (?, ?, ?) "
+            "ON CONFLICT(batch_id) DO UPDATE SET completed_at=excluded.completed_at, summary_json=excluded.summary_json",
             (batch_id, timestamp, json.dumps(summary, ensure_ascii=False)),
         )
         self.connection.commit()

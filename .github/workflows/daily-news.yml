@@ -21,6 +21,8 @@ jobs:
       PYTHONPATH: src
       TZ: Asia/Kolkata
       PYTHONUNBUFFERED: "1"
+      # Scheduled/manual workflow attempts always rebuild a batch so retries still create a downloadable package.
+      NEWS_ALLOW_REPEAT_BATCH: "true"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -68,7 +70,7 @@ jobs:
             output/**/content_package.zip
             output/**/Daily_News_Report.xlsx
             output/**/summary.json
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload failure diagnostics
@@ -82,4 +84,3 @@ jobs:
             output/**/verification_manifest.json
           if-no-files-found: ignore
           retention-days: 14
-

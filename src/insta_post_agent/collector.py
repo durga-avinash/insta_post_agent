@@ -20,6 +20,12 @@ from .normalize import canonicalize_url, clean_html_text, stable_id
 LOGGER = logging.getLogger(__name__)
 
 
+def feed_error_detail(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return f"HTTP {status}" if status is not None else exc.__class__.__name__
+
+
 def make_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(
@@ -123,6 +129,7 @@ def collect_sources(
             articles.extend(entries)
             feed_status.append({"source_id": source.id, "status": "OK", "items": str(len(entries))})
         except (requests.RequestException, ValueError, UnicodeError) as exc:
-            LOGGER.warning("Feed %s failed: %s", source.id, exc.__class__.__name__)
-            feed_status.append({"source_id": source.id, "status": "FAILED", "items": "0", "error": exc.__class__.__name__})
+            detail = feed_error_detail(exc)
+            LOGGER.warning("Feed %s failed: %s", source.id, detail)
+            feed_status.append({"source_id": source.id, "status": "FAILED", "items": "0", "error": detail})
     return articles, feed_status

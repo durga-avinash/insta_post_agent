@@ -1,0 +1,20 @@
+[
+  {
+    "geo": "IN",
+    "name": "Google Trends India",
+    "url": "https://trends.google.com/trending/rss?geo=IN",
+    "region": "INDIA"
+  },
+  {
+    "geo": "US",
+    "name": "Google Trends United States",
+    "url": "https://trends.google.com/trending/rss?geo=US",
+    "region": "WORLD"
+  },
+  {
+    "geo": "GB",
+    "name": "Google Trends United Kingdom",
+    "url": "https://trends.google.com/trending/rss?geo=GB",
+    "region": "WORLD"
+  }
+]

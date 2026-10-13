@@ -132,9 +132,17 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
     draw.text((850, 80), f"{slide_number:02d} / {total:02d}", font=_font(24, True), fill=MUTED)
     draw.rounded_rectangle((74, 157, 390, 202), radius=19, fill="#E4D9C4")
     draw.text((91, 166), story.category.upper()[:28], font=_font(19, True), fill=INK)
+    if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" and story.trend_evidence:
+        evidence = story.trend_evidence[0]
+        trend_text = f"TRENDING {evidence['geo']} · {evidence['approx_traffic']}"
+        draw.rounded_rectangle((408, 157, 650, 202), radius=19, fill="#D8E9DD")
+        draw.text((422, 167), trend_text[:24], font=_font(15, True), fill="#225D43")
+    else:
+        draw.rounded_rectangle((408, 157, 650, 202), radius=19, fill="#F0D9A5")
+        draw.text((422, 167), "TREND UNCONFIRMED", font=_font(15, True), fill="#6B4D0C")
     if story.verification_status == "NEEDS_REVIEW":
-        draw.rounded_rectangle((626, 157, 1006, 202), radius=19, fill="#A84A3F")
-        draw.text((650, 166), "NEEDS HUMAN REVIEW", font=_font(19, True), fill=PAPER)
+        draw.rounded_rectangle((666, 157, 1006, 202), radius=19, fill="#A84A3F")
+        draw.text((681, 168), "NEEDS HUMAN REVIEW", font=_font(16, True), fill=PAPER)
 
     title_font_size = 56
     title_font = _font(title_font_size, True)
@@ -184,6 +192,12 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
     draw.line((74, footer_y, 1006, footer_y), fill="#C9C2B4", width=2)
     draw.text((74, footer_y + 23), f"SOURCE  {story.publisher[:52]}", font=_font(19, True), fill=MUTED)
     draw.text((74, footer_y + 57), f"Published: {source_date}  •  Review status: {story.verification_status}", font=_font(17), fill=MUTED)
+    if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" and story.trend_evidence:
+        evidence = story.trend_evidence[0]
+        trend_line = f"Google Trends {evidence['geo']}: {evidence['query'][:54]} · {evidence['approx_traffic']} approx."
+        draw.text((74, footer_y + 82), trend_line, font=_font(15), fill=MUTED)
+    else:
+        draw.text((74, footer_y + 82), "Trend status: not confirmed by Google Trends", font=_font(15), fill=MUTED)
     draw.text((74, 1295), "Illustrative editorial graphic • See caption for source link", font=_font(16), fill=MUTED)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,4 +214,3 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
         "summary_truncated": summary_truncated,
         "review_badge": story.verification_status == "NEEDS_REVIEW",
     }
-

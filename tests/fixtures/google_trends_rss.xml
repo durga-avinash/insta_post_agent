@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:ht="https://trends.google.com/trending/rss">
+  <channel>
+    <title>Fixture Google Trending Now</title>
+    <item>
+      <title>FIXTURE ONLY: sample india election update</title>
+      <link>https://trends.google.com/trends/explore?q=fixture</link>
+      <pubDate>Tue, 13 Oct 2026 03:15:00 GMT</pubDate>
+      <ht:approx_traffic>20K+</ht:approx_traffic>
+      <ht:news_item>
+        <ht:news_item_title>FIXTURE ONLY: sample india election update results</ht:news_item_title>
+        <ht:news_item_url>https://fixture.example.test/news/one</ht:news_item_url>
+        <ht:news_item_source>Fixture Publisher</ht:news_item_source>
+        <ht:news_item_snippet>Synthetic test text; not current news.</ht:news_item_snippet>
+      </ht:news_item>
+    </item>
+    <item>
+      <title>FIXTURE ONLY: small community reading room</title>
+      <link>https://trends.google.com/trends/explore?q=fixture-room</link>
+      <pubDate>Tue, 13 Oct 2026 03:10:00 GMT</pubDate>
+      <ht:approx_traffic>2,000+</ht:approx_traffic>
+    </item>
+  </channel>
+</rss>

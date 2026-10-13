@@ -18,6 +18,31 @@ class FeedSource:
     source_type: str = "publisher"
 
 
+@dataclass(frozen=True)
+class TrendFeed:
+    geo: str
+    region: Region
+    name: str
+    url: str
+
+
+@dataclass
+class TrendSignal:
+    geo: str
+    region: Region
+    query: str
+    approx_traffic: str
+    approximate_searches: int | None
+    started_at: datetime | None
+    url: str
+    news_items: list[dict[str, str]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["started_at"] = self.started_at.isoformat() if self.started_at else None
+        return value
+
+
 @dataclass
 class Article:
     id: str
@@ -73,6 +98,8 @@ class Story:
     image_path: str = ""
     caption: str = ""
     freshness_status: str = "FRESH"
+    trend_status: str = "UNCONFIRMED"
+    trend_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,4 +124,6 @@ class Story:
             "image_path": self.image_path,
             "caption": self.caption,
             "freshness_status": self.freshness_status,
+            "trend_status": self.trend_status,
+            "trend_evidence": self.trend_evidence,
         }

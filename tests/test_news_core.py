@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from insta_post_agent.collector import parse_feed_content
-from insta_post_agent.collector import make_session
+from insta_post_agent.collector import feed_error_detail, make_session
 from insta_post_agent.classify import classify_category, classify_region
 from insta_post_agent.models import Article, FeedSource
 from insta_post_agent.normalize import canonicalize_url, normalize_timestamp
@@ -71,4 +71,13 @@ def test_feed_retry_policy_and_source_registry_load():
     sources = load_sources(Path(__file__).parents[1] / "config" / "sources.json")
     assert {source.region for source in sources} == {"INDIA", "WORLD"}
     assert len(sources) >= 6
+
+
+def test_feed_error_detail_preserves_http_status_without_logging_response_body():
+    import requests
+
+    error = requests.HTTPError("blocked response body")
+    error.response = type("Response", (), {"status_code": 403, "text": "private response detail"})()
+    assert feed_error_detail(error) == "HTTP 403"
+    assert feed_error_detail(requests.Timeout()) == "Timeout"
 

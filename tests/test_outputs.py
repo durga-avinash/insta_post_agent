@@ -10,6 +10,7 @@ from PIL import Image
 
 from insta_post_agent.caption import make_caption
 from insta_post_agent.history import NewsHistory
+from insta_post_agent.models import TrendSignal
 from insta_post_agent.pipeline import run_daily
 from insta_post_agent.render import render_slide
 from insta_post_agent.verification import build_story
@@ -31,6 +32,22 @@ def fixture_story(title: str, region: str, slug: str, now=NOW):
     )
     second.category = first.category
     return build_story([first, second], "fixture-batch", now=now)
+
+
+def fixture_trend_signals(stories):
+    return [
+        TrendSignal(
+            geo="IN" if story.region == "INDIA" else "US",
+            region=story.region,
+            query=story.headline,
+            approx_traffic="50K+",
+            approximate_searches=50_000,
+            started_at=NOW - timedelta(minutes=5),
+            url="https://trends.google.com/trends/explore?q=fixture",
+            news_items=[],
+        )
+        for story in stories
+    ]
 
 
 def test_slide_dimensions_layout_workbook_and_caption_links(tmp_path):
@@ -82,7 +99,7 @@ def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monk
     )
     summary = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=expected_now, sources=[],
+        now=expected_now, sources=[], trend_signals=fixture_trend_signals(records),
     )
     # Batch date is computed in IST; the fixture timestamp is 09:00 IST.
     date_dir = tmp_path / "output" / "2026-10-13"
@@ -102,10 +119,17 @@ def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monk
     assert len(manifest["selected_news_ids"]) == 6
     duplicate = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=expected_now, sources=[],
+        now=expected_now, sources=[], trend_signals=fixture_trend_signals(records),
     )
     assert duplicate["duplicate_batch"] is True
-    assert duplicate["workflow_complete"] is False
+    assert duplicate["workflow_complete"] is True
+
+    repeated = run_daily(
+        root=Path.cwd(), output_root=tmp_path / "repeat-output", history_path=tmp_path / "state" / "history.sqlite3",
+        now=expected_now, sources=[], trend_signals=fixture_trend_signals(records), allow_repeat_batch=True,
+    )
+    assert repeated.get("duplicate_batch", False) is False
+    assert repeated["images_generated"] == 6
 
 
 def test_pipeline_completes_with_only_the_high_trend_stories_available(tmp_path, monkeypatch):
@@ -123,7 +147,7 @@ def test_pipeline_completes_with_only_the_high_trend_stories_available(tmp_path,
 
     summary = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=NOW, sources=[],
+        now=NOW, sources=[], trend_signals=fixture_trend_signals(records),
     )
     date_dir = tmp_path / "output" / "2026-10-13"
 
@@ -160,17 +184,17 @@ def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch
 
     summary = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=NOW, sources=[],
+        now=NOW, sources=[], trend_signals=fixture_trend_signals(records),
     )
 
     assert summary["workflow_complete"] is True
-    assert summary["qualified_by_region"] == {"INDIA": 4, "WORLD": 4}
+    assert summary["matched_trends_by_region"] == {"INDIA": 4, "WORLD": 4}
     assert summary["selected_by_region"] == {"INDIA": 3, "WORLD": 3}
     assert summary["images_generated"] == 6
     assert summary["slide_limit_respected"] is True
 
 
-def test_below_threshold_candidates_make_a_valid_empty_report(tmp_path, monkeypatch):
+def test_no_trend_match_uses_labeled_source_backed_fallback(tmp_path, monkeypatch):
     records = [
         article(
             "FIXTURE ONLY: Local library opens a community reading room",
@@ -194,15 +218,16 @@ def test_below_threshold_candidates_make_a_valid_empty_report(tmp_path, monkeypa
 
     summary = run_daily(
         root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-        now=NOW, sources=[],
+        now=NOW, sources=[], trend_signals=[],
     )
     date_dir = tmp_path / "output" / "2026-10-13"
 
     assert summary["workflow_complete"] is True
-    assert summary["batch_status"] == "NO_STORIES_MET_THRESHOLD"
-    assert summary["images_generated"] == 0
-    assert summary["selected_by_region"] == {"INDIA": 0, "WORLD": 0}
-    assert summary["below_threshold_by_region"] == {"INDIA": 1, "WORLD": 1}
+    assert summary["batch_status"] == "READY_FOR_REVIEW"
+    assert summary["trend_selection_mode"] == "NEWSROOM_FALLBACK_UNCONFIRMED"
+    assert summary["images_generated"] == 2
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 1}
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 1, "WORLD": 1}
     assert summary["publication_ready"] is False
     assert summary["zip_created"] is True
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
@@ -210,14 +235,15 @@ def test_below_threshold_candidates_make_a_valid_empty_report(tmp_path, monkeypa
         assert "Daily_News_Report.xlsx" in names
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
-        assert not any(name.endswith(".png") for name in names)
+        assert sum(name.endswith(".png") for name in names) == 2
+    assert "TREND UNCONFIRMED" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
 
 
-def test_trend_threshold_must_be_in_the_documented_range(tmp_path):
-    with pytest.raises(ValueError, match="between 0 and 100"):
+def test_trend_volume_threshold_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="positive whole number"):
         run_daily(
             root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
-            now=NOW, sources=[], min_trend_score=101,
+            now=NOW, sources=[], min_trend_searches=0, trend_signals=[],
         )
 
 
@@ -237,7 +263,6 @@ def test_recent_event_history_prevents_duplicate_daily_selection(tmp_path):
 
 
 def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_sources_exist(tmp_path, monkeypatch):
-    monkeypatch.setenv("NEWS_MIN_TREND_SCORE", "35")
     fixtures = [
         ("INDIA", "FIXTURE ONLY: City library opens community reading room", "A city library opens a community reading room today for local readers."),
         ("INDIA", "FIXTURE ONLY: Rural clinics pilot appointment calendar", "Rural clinics pilot an appointment calendar today for local visits."),
@@ -267,6 +292,7 @@ def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_source
         history_path=tmp_path / "state" / "history.sqlite3",
         now=NOW,
         sources=[],
+        trend_signals=[],
     )
     date_dir = tmp_path / "output" / "2026-10-13"
     assert summary["workflow_complete"] is True
@@ -275,6 +301,8 @@ def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_source
     assert summary["stories_selected_needs_review"] == 6
     assert summary["human_review_required"] is True
     assert summary["publication_ready"] is False
+    assert summary["trend_selection_mode"] == "NEWSROOM_FALLBACK_UNCONFIRMED"
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 3, "WORLD": 3}
     assert summary["excel_validated"] is True
     assert sum(1 for image in date_dir.glob("slide_*.png")) == 6
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
