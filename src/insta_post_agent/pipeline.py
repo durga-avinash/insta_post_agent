@@ -22,6 +22,15 @@ from .workbook import create_workbook, validate_workbook
 LOGGER = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
+_UNSAFE_REVIEW_FLAGS = (
+    "does not match its headline",
+    "uncertainty/dispute cues",
+    "sensitive or developing",
+    "numeric details differ",
+    "timestamps span more than 24 hours",
+    "headline appears to be non-news",
+)
+
 
 def _caption_section(story: Story) -> str:
     return f"{story.headline}\n{story.summary}\nSource: {story.publisher} — {story.original_url}"
@@ -40,6 +49,24 @@ def _fresh_articles(articles: list[Article], now: datetime, max_age_hours: int) 
         else:
             fresh.append(article)
     return fresh, stale, future
+
+
+def _eligible_review_draft(story: Story) -> bool:
+    """Allow a clearly marked human-review draft only when basic source data exists.
+
+    Single-source items are useful to a human editor, but missing evidence, conflicting
+    descriptions, sensitive claims, or uncertain chronology should remain out of slides.
+    """
+    if story.verification_status != "NEEDS_REVIEW":
+        return False
+    if not story.original_url.startswith("https://") or not story.publisher.strip() or not story.summary.strip():
+        return False
+    if not story.articles or not story.evidence:
+        return False
+    if any(not article.description.strip() or article.published_at is None for article in story.articles):
+        return False
+    reasons = " ".join(story.verification_reasons).lower()
+    return not any(flag in reasons for flag in _UNSAFE_REVIEW_FLAGS)
 
 
 def _make_summary(
@@ -63,11 +90,15 @@ def _make_summary(
         "stories_needs_review": sum(s.verification_status == "NEEDS_REVIEW" for s in candidates),
         "stories_rejected": sum(s.verification_status == "REJECTED" for s in candidates),
         "stories_selected": len(selected),
+        "stories_selected_approved": sum(s.verification_status == "APPROVED" for s in selected),
+        "stories_selected_needs_review": sum(s.verification_status == "NEEDS_REVIEW" for s in selected),
         "images_generated": slide_count,
         "all_six_slides_generated": slide_count == 6,
         "excel_validated": workbook_ok,
         "images_layout_valid": text_layout_valid,
         "zip_created": zip_ok,
+        "publication_ready": slide_count == 6 and all(s.verification_status == "APPROVED" for s in selected),
+        "human_review_required": any(s.verification_status == "NEEDS_REVIEW" for s in selected),
         "workflow_complete": slide_count == 6 and workbook_ok and zip_ok and text_layout_valid,
         "history_persistence": history_persistence,
         "warnings": warnings,
@@ -132,8 +163,12 @@ def run_daily(
     selected_event_keys: list[tuple[str, str]] = []
     for region in ("INDIA", "WORLD"):
         region_stories = [s for s in candidates if s.region == region and s.verification_status == "APPROVED"]
+        review_drafts = [s for s in candidates if s.region == region and _eligible_review_draft(s)]
         kept = 0
-        for story in region_stories:
+        review_selected = 0
+        # Fully approved items are preferred. If there are not enough, include only
+        # reviewable source-backed drafts, keeping NEEDS_REVIEW explicit in every output.
+        for story in [*region_stories, *review_drafts]:
             key = cluster_key(story.articles)
             signature = "\n".join(article.title for article in story.articles)
             if state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
@@ -142,10 +177,14 @@ def run_daily(
             selected.append(story)
             selected_event_keys.append((key, signature))
             kept += 1
+            if story.verification_status == "NEEDS_REVIEW":
+                review_selected += 1
             if kept == 3:
                 break
         if kept < 3:
-            warnings.append(f"{region}: only {kept} of 3 requested stories passed verification and recent-story checks")
+            warnings.append(f"{region}: only {kept} of 3 slide slots had sufficient source material after verification and freshness checks")
+        if review_selected:
+            warnings.append(f"{region}: {review_selected} selected slide(s) are NEEDS_REVIEW and require human corroboration before publication")
     date_dir = output_root / local_date
     date_dir.mkdir(parents=True, exist_ok=True)
     slide_results = []
@@ -182,8 +221,22 @@ def run_daily(
         "feed_status": feed_status,
         "ranking": {
             "components": {"recency": "exponential decay over age in hours", "independent_coverage_proxy": "20 points per additional distinct source domain (capped at 40)", "public_significance_proxy": "transparent keyword proxy (capped at 25)", "search_interest": "not available; scored as 0 and never fabricated"},
-            "selection": "separate region rankings; APPROVED stories only; up to three per region; recent events skipped",
+            "selection": "separate region rankings; APPROVED stories first, then eligible source-backed NEEDS_REVIEW drafts with visible warnings; up to three per region; recent events skipped",
         },
+        "selected_stories": [
+            {
+                "news_id": story.news_id,
+                "region": story.region,
+                "verification_status": story.verification_status,
+                "human_review_required": story.verification_status == "NEEDS_REVIEW",
+                "selection_reason": (
+                    "No APPROVED item filled this region's remaining slot; basic source metadata is present, but independent corroboration is still required."
+                    if story.verification_status == "NEEDS_REVIEW"
+                    else "Passed the automated editorial checks."
+                ),
+            }
+            for story in selected
+        ],
         "history_persistence": history_persistence,
         "limitations": [
             "Evidence is limited to retrieved RSS metadata and descriptions; article pages are not scraped.",
@@ -219,3 +272,4 @@ def run_daily(
     state.close()
     LOGGER.info("Batch %s: %s articles, %s clusters, %s approved, %s slides", batch_id, len(articles), len(candidates), summary["stories_approved"], len(slide_results))
     return summary
+
