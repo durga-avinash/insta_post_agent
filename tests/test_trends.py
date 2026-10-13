@@ -97,7 +97,7 @@ def test_stale_or_undated_trend_signals_are_not_eligible():
     assert excluded_count == 2
 
 
-def test_trend_search_collects_only_high_volume_queries_and_keeps_publisher_metadata():
+def test_trend_search_covers_low_volume_topics_before_trend_gating_and_keeps_publisher_metadata():
     fixture = Path(__file__).parent / "fixtures" / "google_news_search.xml"
     content = fixture.read_bytes()
 
@@ -130,14 +130,16 @@ def test_trend_search_collects_only_high_volume_queries_and_keeps_publisher_meta
         min_delay_seconds=0,
     )
 
-    assert len(session.calls) == 1
+    assert len(session.calls) == 2
     assert session.calls[0][0] == "https://news.google.com/rss/search"
     assert session.calls[0][1] == {"q": "FIXTURE ONLY: Indian election result", "hl": "en-IN", "gl": "IN", "ceid": "IN:en"}
-    assert len(articles) == 1
+    assert session.calls[1][1]["q"] == "FIXTURE ONLY: low volume query"
+    assert len(articles) == 2
     assert articles[0].publisher == "Fixture News Publisher"
     assert articles[0].source_domain == "fixture-publisher.example.test"
     assert articles[0].source_type == "google_news_search"
     assert articles[0].published_at == NOW - timedelta(minutes=2)
-    assert status == [{"geo": "IN", "query": "FIXTURE ONLY: Indian election result", "status": "OK", "items": "1"}]
+    assert [item["query"] for item in status] == ["FIXTURE ONLY: Indian election result", "FIXTURE ONLY: low volume query"]
+    assert all(item["status"] == "OK" for item in status)
 
 

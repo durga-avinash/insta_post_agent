@@ -32,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 MAX_STORIES_PER_REGION = 3
 MAX_SLIDES = 6
-DEFAULT_MIN_TREND_SEARCHES = 10_000
+DEFAULT_MIN_TREND_SEARCHES = 1_000
 
 _UNSAFE_REVIEW_FLAGS = (
     "does not match its headline",
@@ -249,7 +249,6 @@ def run_daily(
             raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number")
         trend_news_articles, trend_news_feed_status = collect_trend_news_articles(
             current_trends,
-            min_searches=min_searches,
             max_queries_per_geo=max_trend_queries,
             session=feed_client,
             retrieved_at=clock,
@@ -486,6 +485,30 @@ def run_daily(
     ]
     summary["publisher_feed_status"] = feed_status
     summary["google_trends_feed_status"] = trend_feed_status
+    summary["google_trends_signal_sample"] = {
+        region: {
+            "current_signals": sum(signal.region == region for signal in current_trends),
+            "signals_at_or_above_volume_floor": sum(
+                signal.region == region and (signal.approximate_searches or 0) >= min_searches
+                for signal in current_trends
+            ),
+            "top_topics_by_approximate_searches": [
+                {
+                    "geo": signal.geo,
+                    "query": signal.query,
+                    "approx_traffic": signal.approx_traffic,
+                    "approximate_searches_lower_bound": signal.approximate_searches,
+                    "started_at": signal.started_at.isoformat() if signal.started_at else None,
+                }
+                for signal in sorted(
+                    (item for item in current_trends if item.region == region),
+                    key=lambda item: item.approximate_searches or 0,
+                    reverse=True,
+                )[:5]
+            ],
+        }
+        for region in ("INDIA", "WORLD")
+    }
     _write_json(date_dir / "summary.json", summary)
     if summary["workflow_complete"]:
         for event_key, signature in selected_event_keys:
