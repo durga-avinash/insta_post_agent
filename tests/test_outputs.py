@@ -144,6 +144,12 @@ def test_pipeline_creates_honestly_labeled_review_drafts_when_only_single_source
     assert summary["publication_ready"] is False
     assert summary["excel_validated"] is True
     assert sum(1 for image in date_dir.glob("slide_*.png")) == 6
+    with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
+        names = set(archive.namelist())
+        assert "Daily_News_Report.xlsx" in names
+        assert "carousel_caption.txt" in names
+        assert "verification_manifest.json" in names
+        assert sum(name.endswith(".png") for name in names) == 6
     caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
     assert "Review draft" in caption
     assert caption.count("[NEEDS_REVIEW]") == 6
