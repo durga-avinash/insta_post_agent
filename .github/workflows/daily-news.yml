@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       PYTHONPATH: src
@@ -23,10 +23,10 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -37,7 +37,7 @@ jobs:
           python -m pip install -r requirements.txt 2>&1 | tee logs/install.log
 
       - name: Restore recent-story history
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: state/news_history.sqlite3
           key: ${{ runner.os }}-news-history-${{ github.run_id }}-${{ github.run_attempt }}
@@ -54,14 +54,14 @@ jobs:
 
       - name: Save recent-story history
         if: always() && hashFiles('state/news_history.sqlite3') != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: state/news_history.sqlite3
           key: ${{ runner.os }}-news-history-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload content package and workbook
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: daily-news-${{ github.run_id }}
           path: |
@@ -73,7 +73,7 @@ jobs:
 
       - name: Upload failure diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: daily-news-diagnostics-${{ github.run_id }}
           path: |
@@ -82,3 +82,4 @@ jobs:
             output/**/verification_manifest.json
           if-no-files-found: ignore
           retention-days: 14
+
