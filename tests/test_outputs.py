@@ -48,6 +48,21 @@ def test_slide_dimensions_layout_workbook_and_caption_links(tmp_path):
     assert validate_workbook(workbook_path)
 
 
+def test_long_slide_copy_is_wrapped_and_shortened_without_canvas_overflow(tmp_path):
+    story = fixture_story("FIXTURE ONLY: Sample science teams share a classroom research note", "WORLD", "long-copy")
+    story.headline = "FIXTURE ONLY: " + "internationally coordinated research teams publish a detailed classroom science report " * 8
+    story.summary = "A synthetic test description with unusually long copy and a deliberately unbroken token " + ("internationalization" * 18)
+    image_path = tmp_path / "long-copy-slide.png"
+
+    layout = render_slide(story, 4, 6, image_path)
+
+    with Image.open(image_path) as image:
+        assert image.size == (1080, 1350)
+    assert layout["text_overflow"] is False
+    assert layout["headline_truncated"] is True
+    assert layout["summary_truncated"] is True
+
+
 def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monkeypatch):
     titles = [
         ("INDIA", "FIXTURE ONLY: Kerala districts add clean water monitoring sensors", "water-sensors"),
