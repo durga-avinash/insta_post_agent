@@ -1,0 +1,58 @@
+[
+  {
+    "id": "indian-express-india",
+    "name": "The Indian Express",
+    "url": "https://indianexpress.com/section/india/feed/",
+    "region": "INDIA",
+    "section": "India",
+    "source_type": "publisher"
+  },
+  {
+    "id": "bbc-india",
+    "name": "BBC News",
+    "url": "https://feeds.bbci.co.uk/news/world/asia/india/rss.xml",
+    "region": "INDIA",
+    "section": "India",
+    "source_type": "publisher"
+  },
+  {
+    "id": "pib-india",
+    "name": "Press Information Bureau",
+    "url": "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1",
+    "region": "INDIA",
+    "section": "Government releases",
+    "source_type": "primary"
+  },
+  {
+    "id": "indian-express-world",
+    "name": "The Indian Express",
+    "url": "https://indianexpress.com/section/world/feed/",
+    "region": "WORLD",
+    "section": "World",
+    "source_type": "publisher"
+  },
+  {
+    "id": "bbc-world",
+    "name": "BBC News",
+    "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "region": "WORLD",
+    "section": "World",
+    "source_type": "publisher"
+  },
+  {
+    "id": "npr-world",
+    "name": "NPR",
+    "url": "https://feeds.npr.org/1004/rss.xml",
+    "region": "WORLD",
+    "section": "World",
+    "source_type": "publisher"
+  },
+  {
+    "id": "guardian-world",
+    "name": "The Guardian",
+    "url": "https://www.theguardian.com/world/rss",
+    "region": "WORLD",
+    "section": "World",
+    "source_type": "publisher"
+  }
+]

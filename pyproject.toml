@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools==75.2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insta-post-agent"
+version = "0.1.0"
+description = "Zero-cost, evidence-first daily news carousel generator"
+requires-python = ">=3.11"
+dependencies = [
+  "feedparser==6.0.11",
+  "requests==2.32.3",
+  "Pillow==10.4.0",
+  "openpyxl==3.1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3"]
+
+[project.scripts]
+insta-post-agent = "insta_post_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"

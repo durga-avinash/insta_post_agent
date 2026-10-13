@@ -1,0 +1,84 @@
+name: Daily news carousel
+
+on:
+  # GitHub cron uses UTC: 03:30 UTC is 09:00 India Standard Time (UTC+05:30).
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-news-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: src
+      TZ: Asia/Kolkata
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: |
+          mkdir -p logs
+          python -m pip install -r requirements.txt 2>&1 | tee logs/install.log
+
+      - name: Restore recent-story history
+        uses: actions/cache/restore@v4
+        with:
+          path: state/news_history.sqlite3
+          key: ${{ runner.os }}-news-history-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-news-history-
+
+      - name: Run automated tests
+        run: |
+          mkdir -p logs
+          python -m pytest -q 2>&1 | tee logs/pytest.log
+
+      - name: Generate daily content package
+        run: python -m insta_post_agent.cli --output-root output --history-path state/news_history.sqlite3
+
+      - name: Save recent-story history
+        if: always() && hashFiles('state/news_history.sqlite3') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state/news_history.sqlite3
+          key: ${{ runner.os }}-news-history-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload content package and workbook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-news-${{ github.run_id }}
+          path: |
+            output/**/content_package.zip
+            output/**/Daily_News_Report.xlsx
+            output/**/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-news-diagnostics-${{ github.run_id }}
+          path: |
+            logs/**
+            output/**/summary.json
+            output/**/verification_manifest.json
+          if-no-files-found: ignore
+          retention-days: 14

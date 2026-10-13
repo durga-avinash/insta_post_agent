@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FIXTURE ONLY: these synthetic entries are not current news. -->
+<rss version="2.0">
+  <channel>
+    <title>Fixture Feed</title>
+    <item>
+      <title>FIXTURE ONLY: River sensors added across sample districts</title>
+      <link>https://fixture.example.test/news/river-sensors?utm_source=test</link>
+      <guid>fixture-river-1</guid>
+      <pubDate>Tue, 13 Oct 2026 03:00:00 GMT</pubDate>
+      <description>A clearly synthetic fixture description used only by automated tests.</description>
+    </item>
+    <item>
+      <title>FIXTURE ONLY: Item with malformed date</title>
+      <link>https://fixture.example.test/news/malformed-date</link>
+      <pubDate>not-a-timestamp</pubDate>
+      <description>A malformed date fixture.</description>
+    </item>
+    <item>
+      <title>FIXTURE ONLY: Item without a link</title>
+      <pubDate>Tue, 13 Oct 2026 03:00:00 GMT</pubDate>
+      <description>This entry is intentionally incomplete.</description>
+    </item>
+  </channel>
+</rss>
