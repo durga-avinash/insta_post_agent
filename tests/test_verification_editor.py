@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from insta_post_agent.editor import LLMConfig, refine_headline_summary, validate_editorial_payload
+from insta_post_agent.pipeline import _eligible_review_draft
 from insta_post_agent.models import Article
 from insta_post_agent.scoring import cluster_key
 from insta_post_agent.verification import build_story, compare_reports, source_independence_groups
@@ -31,6 +32,40 @@ def test_sensitive_and_insufficient_evidence_gating():
     story = build_story([sensitive_a, sensitive_b], "fixture-batch", now=NOW)
     assert story.verification_status == "NEEDS_REVIEW"
     assert any("Sensitive" in reason for reason in story.verification_reasons)
+
+
+def test_review_draft_fallback_rejects_sensitive_conflicted_or_evidence_poor_stories():
+    safe = article(
+        "Fixture local library publishes a community reading report",
+        "https://single.example.test/library",
+        "single.example.test",
+        description="A local library publishes a community reading report for nearby schools.",
+    )
+    assert _eligible_review_draft(build_story([safe], "fixture-batch", now=NOW)) is True
+
+    sensitive = article(
+        "Fixture local report confirms casualties after a crash",
+        "https://single.example.test/crash",
+        "single.example.test",
+        description="A local report confirms casualties after a crash.",
+    )
+    assert _eligible_review_draft(build_story([sensitive], "fixture-batch", now=NOW)) is False
+
+    uncertain = article(
+        "Fixture council's clean energy plan disputed by reviewers",
+        "https://single.example.test/energy",
+        "single.example.test",
+        description="The clean energy plan is disputed by reviewers, according to the report.",
+    )
+    assert _eligible_review_draft(build_story([uncertain], "fixture-batch", now=NOW)) is False
+
+    missing = article(
+        "Fixture local library publishes a community reading report",
+        "https://single.example.test/missing",
+        "single.example.test",
+        description="",
+    )
+    assert _eligible_review_draft(build_story([missing], "fixture-batch", now=NOW)) is False
 
 
 def test_mismatched_source_description_requires_review():
@@ -85,3 +120,4 @@ def test_llm_retries_malformed_schema_then_returns_validated_result():
     )
     assert result is not None
     assert session.calls == 2
+
