@@ -14,6 +14,7 @@ from .caption import make_caption
 from .collector import collect_sources
 from .history import NewsHistory
 from .models import Article, Story, TrendSignal
+from .normalize import normalize_title
 from .render import render_slide
 from .scoring import cluster_articles, cluster_key, deduplicate_articles
 from .sources import load_sources
@@ -87,6 +88,21 @@ def _has_recent_report(story: Story, now: datetime, max_age_hours: int = 24) -> 
         article.published_at is not None
         and cutoff <= article.published_at.astimezone(timezone.utc) <= now + timedelta(minutes=10)
         for article in story.articles
+    )
+
+
+def _best_unused_trend_evidence(story: Story, used_topics: set[str]) -> dict[str, object] | None:
+    ranked = sorted(
+        story.trend_evidence,
+        key=lambda item: (
+            int(item.get("approximate_searches_lower_bound", 0)),
+            float(item.get("match_strength", 0.0)),
+        ),
+        reverse=True,
+    )
+    return next(
+        (item for item in ranked if normalize_title(str(item.get("query", ""))) not in used_topics),
+        None,
     )
 
 
@@ -335,16 +351,20 @@ def run_daily(
         else:
             pool.sort(
                 key=lambda story: (
+                    story.verification_status == "APPROVED",
                     max(int(item["approximate_searches_lower_bound"]) for item in story.trend_evidence),
                     len({str(item["geo"]) for item in story.trend_evidence}),
-                    story.verification_status == "APPROVED",
                     story.trend_score,
                 ),
                 reverse=True,
             )
         kept = 0
         review_selected = 0
+        used_trend_topics: set[str] = set()
         for story in pool:
+            chosen_trend = None if use_fallback else _best_unused_trend_evidence(story, used_trend_topics)
+            if not use_fallback and chosen_trend is None:
+                continue
             key = cluster_key(story.articles)
             signature = "\n".join(article.title for article in story.articles)
             if not allow_repeat and state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
@@ -352,6 +372,10 @@ def run_daily(
                 continue
             if use_fallback:
                 story.trend_status = "NOT_CONFIRMED_FALLBACK"
+            else:
+                chosen_topic = normalize_title(str(chosen_trend.get("query", "")))
+                used_trend_topics.add(chosen_topic)
+                story.trend_evidence = [chosen_trend] + [item for item in story.trend_evidence if item is not chosen_trend]
             selected.append(story)
             selected_event_keys.append((key, signature))
             kept += 1
@@ -499,6 +523,10 @@ def run_daily(
                     "approx_traffic": signal.approx_traffic,
                     "approximate_searches_lower_bound": signal.approximate_searches,
                     "started_at": signal.started_at.isoformat() if signal.started_at else None,
+                    "related_news_items": [
+                        {"title": item.get("title", ""), "publisher": item.get("publisher", ""), "url": item.get("url", "")}
+                        for item in signal.news_items[:2]
+                    ],
                 }
                 for signal in sorted(
                     (item for item in current_trends if item.region == region),

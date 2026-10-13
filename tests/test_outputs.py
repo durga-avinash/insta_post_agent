@@ -12,6 +12,7 @@ from insta_post_agent.caption import make_caption
 from insta_post_agent.history import NewsHistory
 from insta_post_agent.models import TrendSignal
 from insta_post_agent.pipeline import run_daily
+from insta_post_agent.pipeline import _best_unused_trend_evidence
 from insta_post_agent.render import render_slide
 from insta_post_agent.verification import build_story
 from insta_post_agent.workbook import create_workbook, validate_workbook
@@ -326,4 +327,18 @@ def test_caption_keeps_six_story_urls_under_target_length():
     caption = make_caption(stories)
     assert len(caption) <= 2200
     assert all(story.original_url in caption for story in stories)
+
+
+def test_trend_topic_diversity_uses_next_unused_topic():
+    story = fixture_story("FIXTURE ONLY: Man United publishes a sample match report", "WORLD", "topic-diversity")
+    story.trend_evidence = [
+        {"query": "Man Utd", "approximate_searches_lower_bound": 2_000, "match_strength": 0.9},
+        {"query": "Championship", "approximate_searches_lower_bound": 1_000, "match_strength": 0.8},
+    ]
+
+    first = _best_unused_trend_evidence(story, set())
+    second = _best_unused_trend_evidence(story, {"man utd"})
+
+    assert first["query"] == "Man Utd"
+    assert second["query"] == "Championship"
 
