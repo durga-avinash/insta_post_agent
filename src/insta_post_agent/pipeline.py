@@ -199,6 +199,10 @@ def run_daily(
                 raise ValueError(f"Slide has wrong dimensions: {filename}")
         if layout["text_overflow"]:
             warnings.append(f"Text layout needs inspection on {filename}")
+        if layout.get("headline_truncated") or layout.get("summary_truncated"):
+            warnings.append(
+                f"Slide text was shortened to fit {filename}; the complete headline and summary remain in the workbook and caption"
+            )
         slide_results.append(layout)
 
     caption = make_caption(selected)
