@@ -108,6 +108,9 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
     draw.text((850, 80), f"{slide_number:02d} / {total:02d}", font=_font(24, True), fill=MUTED)
     draw.rounded_rectangle((74, 157, 390, 202), radius=19, fill="#E4D9C4")
     draw.text((91, 166), story.category.upper()[:28], font=_font(19, True), fill=INK)
+    if story.verification_status == "NEEDS_REVIEW":
+        draw.rounded_rectangle((626, 157, 1006, 202), radius=19, fill="#A84A3F")
+        draw.text((650, 166), "NEEDS HUMAN REVIEW", font=_font(19, True), fill=PAPER)
 
     title_font = _font(56, True)
     lines = _wrap(draw, story.headline, title_font, 925)
@@ -143,4 +146,11 @@ def render_slide(story: Story, slide_number: int, total: int, output_path: Path)
     with Image.open(output_path) as check:
         if check.size != (WIDTH, HEIGHT):
             raise ValueError(f"Unexpected rendered size: {check.size}")
-    return {"path": str(output_path), "width": WIDTH, "height": HEIGHT, "text_overflow": len(lines) > 4 or len(summary_lines) > 3}
+    return {
+        "path": str(output_path),
+        "width": WIDTH,
+        "height": HEIGHT,
+        "text_overflow": len(lines) > 4 or len(summary_lines) > 3,
+        "review_badge": story.verification_status == "NEEDS_REVIEW",
+    }
+
