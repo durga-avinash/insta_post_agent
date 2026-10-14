@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from .models import Article, Evidence, Story
-from .normalize import clean_html_text, normalize_title, stable_id
+from .normalize import clean_html_text, normalize_domain, normalize_title, stable_id
 from .scoring import cluster_key, trend_score
 
 SENSITIVE_TERMS = re.compile(
@@ -63,7 +63,7 @@ def source_independence_groups(articles: list[Article]) -> dict[str, str]:
     for article in articles:
         content = f"{article.title} {article.description}".lower()
         wire_group = next((group for cue, group in WIRE_CUES.items() if cue in content), None)
-        groups[_article_evidence_key(article)] = wire_group or article.source_domain or article.source_id
+        groups[_article_evidence_key(article)] = wire_group or normalize_domain(article.source_domain) or article.source_id
     # Identical feed descriptions often indicate cross-posting; do not count them as independent.
     descriptions: dict[str, list[str]] = {}
     for article in articles:
@@ -115,7 +115,7 @@ def compare_reports(articles: list[Article]) -> tuple[list[Evidence], list[str],
         if is_trusted_source_domain(article.source_domain)
     })
     reasons: list[str] = []
-    if len({a.source_domain for a in articles if a.source_domain}) < 2:
+    if len({normalize_domain(a.source_domain) for a in articles if a.source_domain}) < 2:
         note = "Only one publisher domain was retrieved; this is recorded as limited coverage, not a truth failure"
         for item in evidence:
             item.claims_checked.append(note)
