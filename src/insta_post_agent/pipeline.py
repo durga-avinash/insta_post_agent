@@ -451,7 +451,7 @@ def run_daily(
     # and never represented as a popularity or social-media measurement.
     if trend_signals is None:
         try:
-            coverage_queries = int(os.getenv("NEWS_COVERAGE_QUERIES_PER_REGION", "6"))
+            coverage_queries = int(os.getenv("NEWS_COVERAGE_QUERIES_PER_REGION", "12"))
         except ValueError as exc:
             raise ValueError("NEWS_COVERAGE_QUERIES_PER_REGION must be a positive whole number") from exc
         if coverage_queries < 1:
