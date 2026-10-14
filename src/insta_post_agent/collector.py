@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 from .classify import classify_category, classify_region
 from .models import Article, FeedSource
-from .normalize import canonicalize_url, clean_html_text, stable_id
+from .normalize import canonicalize_url, clean_html_text, normalize_title, stable_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +72,20 @@ def _entry_timestamp(entry: Any) -> datetime | None:
     return None
 
 
+def _strip_publisher_suffix(title: str, publisher: str) -> str:
+    """Remove a publisher label appended by Google News without altering article text."""
+    publisher_key = normalize_title(publisher)
+    if not publisher_key:
+        return title
+    for separator in (" - ", " – ", " — ", " | "):
+        if separator not in title:
+            continue
+        headline, suffix = title.rsplit(separator, 1)
+        if normalize_title(suffix) == publisher_key:
+            return headline.strip()
+    return title
+
+
 def parse_feed_content(
     source: FeedSource,
     content: bytes | str,
@@ -102,6 +116,7 @@ def parse_feed_content(
             publisher_domain = urlsplit(publisher_url).hostname or ""
             publisher = publisher_title or source.name
             source_domain = publisher_domain or source_domain
+            title = _strip_publisher_suffix(title, publisher)
             # Preserve separate publisher identities within Google News search results.
             source_id = f"{source.id}:{source_domain or publisher.casefold()}"
         article_id = stable_id(source_id, str(entry.get("id", "")) or canonical)

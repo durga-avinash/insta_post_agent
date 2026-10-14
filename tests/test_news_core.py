@@ -34,6 +34,26 @@ def test_rss_parsing_timestamp_normalization_and_malformed_entries():
     assert parsed[0].canonical_url == "https://fixture.example.test/news/river-sensors"
 
 
+def test_google_news_publisher_suffix_cannot_create_a_false_business_topic():
+    source = FeedSource(
+        "google-news-fixture", "Google News fixture", "https://news.google.com/rss/search",
+        "INDIA", "Fixture", source_type="google_news_search",
+    )
+    content = b"""<rss version='2.0'><channel><item>
+      <title>FIXTURE ONLY: LASK vs Liverpool Champions League preview - NDTV Profit</title>
+      <link>https://news.google.com/rss/articles/FIXTURE_ONLY</link>
+      <source url='https://www.ndtv.com/'>NDTV Profit</source>
+      <description>FIXTURE ONLY: A synthetic football match preview.</description>
+      <pubDate>Tue, 13 Oct 2026 03:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    parsed = parse_feed_content(source, content, retrieved_at=NOW)
+
+    assert len(parsed) == 1
+    assert parsed[0].title == "FIXTURE ONLY: LASK vs Liverpool Champions League preview"
+    assert not is_mba_relevant(parsed[0].title, parsed[0].description)
+
+
 def test_timestamp_and_url_canonicalization():
     assert normalize_timestamp("2026-10-13T03:00:00Z") == datetime(2026, 10, 13, 3, tzinfo=timezone.utc)
     assert normalize_timestamp("not a date") is None
