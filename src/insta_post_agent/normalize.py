@@ -54,6 +54,14 @@ def canonicalize_url(url: str) -> str:
     return urlunsplit(("https", host, path, urlencode(query_items), ""))
 
 
+def normalize_domain(value: str) -> str:
+    """Normalize publisher hosts so www and bare-domain copies are one outlet."""
+    raw = value.strip().lower().rstrip(".")
+    host = urlsplit(raw).hostname if "://" in raw else raw.split(":", 1)[0]
+    host = (host or "").lower().rstrip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
 def normalize_title(title: str) -> str:
     text = html.unescape(title).lower()
     text = re.sub(r"\b(live updates?|live blog|latest updates?)\b", " ", text)
