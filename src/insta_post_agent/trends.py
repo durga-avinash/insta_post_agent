@@ -13,8 +13,10 @@ from pathlib import Path
 import requests
 
 from .models import Article, FeedSource, Story, TrendFeed, TrendSignal
-from .normalize import canonicalize_url, normalize_timestamp, normalize_title, stable_id
+from .normalize import canonicalize_url, normalize_domain, normalize_timestamp, normalize_title, stable_id
 from .collector import feed_error_detail, make_session, parse_feed_content
+from .scoring import titles_describe_same_event
+from .verification import is_trusted_source_domain
 
 LOGGER = logging.getLogger(__name__)
 GOOGLE_TRENDS_NAMESPACE = "https://trends.google.com/trending/rss"
@@ -203,6 +205,130 @@ def collect_trend_news_articles(
             LOGGER.warning("Trend news query %s (%s) failed: %s", signal.geo, signal.query, detail)
             status.append({"geo": signal.geo, "query": signal.query, "status": "FAILED", "items": "0", "error": detail})
     return articles, status
+
+
+def collect_candidate_coverage(
+    stories: list[Story],
+    *,
+    now: datetime,
+    max_queries_per_region: int = 6,
+    max_items_per_query: int = 15,
+    session: requests.Session | None = None,
+    min_delay_seconds: float = 0.25,
+) -> tuple[dict[str, list[Article]], list[dict[str, str]]]:
+    """Check targeted Google News RSS pickup for leading current stories.
+
+    This is a bounded, free RSS search fallback for days when Google Trends is
+    dominated by unrelated topics. It measures publisher coverage, not search
+    volume, public sentiment, or social-media activity.
+    """
+    if max_queries_per_region < 1 or max_items_per_query < 1:
+        raise ValueError("Coverage query and item limits must be positive")
+    client = session or make_session()
+    clock = now.astimezone(timezone.utc)
+    cutoff = clock - timedelta(hours=24)
+    locale = {
+        "INDIA": ("en-IN", "IN", "IN:en"),
+        "WORLD": ("en-US", "US", "US:en"),
+    }
+    selected: list[Story] = []
+    for region in ("INDIA", "WORLD"):
+        eligible = [
+            story for story in stories
+            if story.region == region
+            and story.headline.strip()
+            and any(
+                is_trusted_source_domain(article.source_domain)
+                and article.description.strip()
+                and article.published_at is not None
+                and cutoff <= article.published_at.astimezone(timezone.utc) <= clock + timedelta(minutes=10)
+                for article in story.articles
+            )
+        ]
+        eligible.sort(
+            key=lambda story: (
+                story.trend_score,
+                max((article.published_at for article in story.articles if article.published_at), default=datetime.min.replace(tzinfo=timezone.utc)),
+            ),
+            reverse=True,
+        )
+        selected.extend(eligible[:max_queries_per_region])
+
+    coverage_by_story: dict[str, list[Article]] = {}
+    status: list[dict[str, str]] = []
+    for index, story in enumerate(selected):
+        if index and min_delay_seconds > 0:
+            time.sleep(min_delay_seconds)
+        language, country, edition = locale[story.region]
+        query = " ".join(story.headline.split())[:180].rsplit(" ", 1)[0]
+        source = FeedSource(
+            id=f"google-news-coverage-{stable_id(story.news_id, normalize_title(query))}",
+            name="Google News RSS (targeted publisher coverage)",
+            url="https://news.google.com/rss/search",
+            region=story.region,
+            section="Targeted coverage check",
+            source_type="google_news_search",
+        )
+        try:
+            response = client.get(
+                source.url,
+                params={
+                    "q": f'{query} when:2d',
+                    "hl": language,
+                    "gl": country,
+                    "ceid": edition,
+                },
+                timeout=(8, 20),
+            )
+            response.raise_for_status()
+            parsed = parse_feed_content(source, response.content, retrieved_at=clock, max_items=max_items_per_query)
+            original_urls = {
+                canonicalize_url(article.canonical_url or article.url)
+                for article in story.articles
+                if article.url
+            }
+            original_domains = {
+                normalize_domain(article.source_domain) for article in story.articles if article.source_domain
+            }
+            seen_urls = set(original_urls)
+            matched: list[Article] = []
+            for article in parsed:
+                url_key = canonicalize_url(article.canonical_url or article.url)
+                if (
+                    not is_trusted_source_domain(article.source_domain)
+                    or not article.description.strip()
+                    or article.published_at is None
+                    or not cutoff <= article.published_at.astimezone(timezone.utc) <= clock + timedelta(minutes=10)
+                    or normalize_domain(article.source_domain) in original_domains
+                    or url_key in seen_urls
+                    or not titles_describe_same_event(story.headline, article.title)
+                ):
+                    continue
+                seen_urls.add(url_key)
+                matched.append(article)
+            if matched:
+                coverage_by_story[story.news_id] = matched
+            status.append({
+                "news_id": story.news_id,
+                "region": story.region,
+                "headline": story.headline,
+                "status": "OK",
+                "items": str(len(parsed)),
+                "trusted_matching_publishers": str(len({article.source_domain for article in matched})),
+            })
+        except (requests.RequestException, ValueError, UnicodeError) as exc:
+            detail = feed_error_detail(exc)
+            LOGGER.warning("Google News coverage query failed for %s: %s", story.news_id, detail)
+            status.append({
+                "news_id": story.news_id,
+                "region": story.region,
+                "headline": story.headline,
+                "status": "FAILED",
+                "items": "0",
+                "trusted_matching_publishers": "0",
+                "error": detail,
+            })
+    return coverage_by_story, status
 
 
 def fresh_trend_signals(signals: list[TrendSignal], *, now: datetime, max_age_hours: int = 24) -> tuple[list[TrendSignal], int]:
@@ -394,5 +520,4 @@ def apply_trend_evidence(story: Story, evidence: list[dict[str, object]]) -> Non
         "headline_trend_match_component": match_component,
     }
     story.trend_score = round(search_component + location_component + match_component, 2)
-
 
