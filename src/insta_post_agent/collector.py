@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 from .classify import classify_category, classify_region
 from .models import Article, FeedSource
-from .normalize import canonicalize_url, clean_html_text, normalize_title, stable_id
+from .normalize import canonicalize_url, clean_html_text, normalize_domain, normalize_title, stable_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -107,13 +107,13 @@ def parse_feed_content(
             summary_raw = str(entry.content[0].get("value", ""))
         description = clean_html_text(summary_raw)
         publisher = source.name
-        source_domain = urlsplit(canonical).hostname or ""
+        source_domain = normalize_domain(urlsplit(canonical).hostname or "")
         source_id = source.id
         if source.source_type == "google_news_search":
             publisher_metadata = entry.get("source") or {}
             publisher_title = clean_html_text(str(publisher_metadata.get("title", "")))
             publisher_url = str(publisher_metadata.get("href", "") or publisher_metadata.get("url", ""))
-            publisher_domain = urlsplit(publisher_url).hostname or ""
+            publisher_domain = normalize_domain(urlsplit(publisher_url).hostname or "")
             publisher = publisher_title or source.name
             source_domain = publisher_domain or source_domain
             title = _strip_publisher_suffix(title, publisher)
@@ -165,4 +165,3 @@ def collect_sources(
             LOGGER.warning("Feed %s failed: %s", source.id, detail)
             feed_status.append({"source_id": source.id, "status": "FAILED", "items": "0", "error": detail})
     return articles, feed_status
-
