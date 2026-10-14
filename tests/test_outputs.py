@@ -393,6 +393,7 @@ def test_trusted_business_reports_without_a_trend_match_create_labeled_editorial
         "INDIA",
         "rbi-interest-rate",
     )
+    story.articles = story.articles[:1]  # One outlet can support a draft, not publisher pickup.
     monkeypatch.setattr(
         "insta_post_agent.pipeline.collect_sources",
         lambda *args, **kwargs: (story.articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
@@ -423,22 +424,13 @@ def test_trusted_business_reports_without_a_trend_match_create_labeled_editorial
         assert "slide_01_india.png" in archive.namelist()
 
 
-def test_three_independent_trusted_publishers_are_audited_as_coverage_trend_fallback(tmp_path, monkeypatch):
+def test_two_independent_trusted_publishers_are_audited_as_coverage_trend_fallback(tmp_path, monkeypatch):
     title = "FIXTURE ONLY: Central bank holds interest rate after inflation review"
     story = fixture_story(title, "INDIA", "coverage-pulse")
-    third = article(
-        title,
-        "https://apnews.com/fixture/coverage-pulse",
-        "apnews.com",
-        description="A separate fixture report says the central bank decision shapes synthetic business lending conditions.",
-        region="INDIA",
-        published_at=NOW - timedelta(minutes=7),
-        source_id="ap-coverage-fixture",
-    )
-    raw_articles = [*story.articles, third]
+    raw_articles = list(story.articles)
     monkeypatch.setattr(
         "insta_post_agent.pipeline.collect_sources",
-        lambda *args, **kwargs: (raw_articles, [{"source_id": "fixture", "status": "OK", "items": "3"}]),
+        lambda *args, **kwargs: (raw_articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
     )
 
     summary = run_daily(
@@ -453,8 +445,8 @@ def test_three_independent_trusted_publishers_are_audited_as_coverage_trend_fall
     assert selected["selection_basis"] == "CROSS_PUBLISHER_COVERAGE"
     assert selected["trend_status"] == "CONFIRMED_CROSS_PUBLISHER_COVERAGE"
     signal = selected["trend_evidence"][0]
-    assert signal["independent_publisher_count"] == 3
-    assert len(signal["evidence_urls"]) == 3
+    assert signal["independent_publisher_count"] == 2
+    assert len(signal["evidence_urls"]) == 2
     assert "search-volume or social-media metric" in selected["selection_reason"]
 
 
@@ -560,6 +552,7 @@ def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(
         "INDIA",
         "low-trend-rbi",
     )
+    story.articles = story.articles[:1]  # A low-volume trend plus one publisher is still unconfirmed.
     monkeypatch.setattr(
         "insta_post_agent.pipeline.collect_sources",
         lambda *args, **kwargs: (story.articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
