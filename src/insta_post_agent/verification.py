@@ -161,6 +161,14 @@ def _source_sentences(articles: list[Article]) -> list[tuple[str, str, str]]:
             tokens = _core_terms(sentence)
             if not tokens:
                 continue
+            normalized_sentence = normalize_title(sentence)
+            normalized_headline = normalize_title(article.title)
+            if normalized_headline and normalized_headline in normalized_sentence:
+                # Search feeds sometimes put the full title in description as
+                # well. Omit that literal echo and use another source detail if
+                # one exists; avoid a broad token-overlap filter that would also
+                # discard a genuine paraphrase carrying useful context.
+                continue
             if any(
                 len(tokens & prior) / max(1, len(tokens | prior)) >= 0.72
                 or len(tokens & prior) / max(1, min(len(tokens), len(prior))) >= 0.86
