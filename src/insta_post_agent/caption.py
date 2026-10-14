@@ -7,11 +7,11 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     has_review_items = any(story.verification_status == "NEEDS_REVIEW" for story in stories)
     has_unconfirmed_trend = any(story.trend_status == "NOT_CONFIRMED_FALLBACK" for story in stories)
     if has_unconfirmed_trend:
-        intro = "Review draft — newsroom fallback: items marked TREND UNCONFIRMED were not matched to Google Trends. Do not describe them as trending; verify the linked reports before publication."
-        closing = "Check original reporting and trend labels before manually publishing."
+        intro = "Review draft: items marked TREND UNCONFIRMED have no same-region Google Trends match; do not describe them as trending."
+        closing = "Open each original report, resolve review flags, and publish manually only after editorial approval."
     elif has_review_items:
-        intro = "Review draft: NEEDS_REVIEW stories are not independently corroborated. Check each linked report before publication."
-        closing = "Read the original sources for full context before manually publishing."
+        intro = "Review draft: NEEDS_REVIEW items have unresolved evidence or editorial flags; they are not publication-approved."
+        closing = "Open each original report, resolve review flags, and publish manually only after editorial approval."
     else:
         intro = "Today's news, with the source links kept close."
         closing = "A concise daily brief. Please read the linked reporting for full context."
@@ -20,7 +20,10 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     summaries: list[str] = []
     for index, story in enumerate(stories, start=1):
         trend_label = "TREND UNCONFIRMED" if story.trend_status == "NOT_CONFIRMED_FALLBACK" else "TREND MATCHED" if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" else "TREND UNCONFIRMED"
-        fixed.append(f"{index}. [{story.verification_status}] {story.headline} [{trend_label}]\nSource: {story.publisher}\n{story.original_url}")
+        links = list(dict.fromkeys(article.url for article in story.articles if article.url))
+        links.extend(url for url in [story.original_url, *story.corroborating_urls] if url and url not in links)
+        source_links = "\n".join(links)
+        fixed.append(f"{index}. [{story.verification_status}] {story.headline} [{trend_label}]\nSource(s): {story.publisher}\n{source_links}")
         summaries.append(story.summary)
     fixed_text_len = sum(len(section) for section in fixed) + max(0, len(fixed) - 1) * 2
     reserve = len(intro) + len(closing) + len(hashtags) + 8
@@ -39,3 +42,4 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[:max_chars]
+

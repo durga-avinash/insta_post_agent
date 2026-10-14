@@ -13,7 +13,8 @@ from insta_post_agent.history import NewsHistory
 from insta_post_agent.models import TrendSignal
 from insta_post_agent.pipeline import run_daily
 from insta_post_agent.pipeline import _best_unused_trend_evidence, _eligible_review_draft
-from insta_post_agent.render import render_slide
+from insta_post_agent.render import _logo_at_size, render_slide
+from insta_post_agent.verification import deterministic_key_takeaways, deterministic_summary
 from insta_post_agent.verification import build_story
 from insta_post_agent.workbook import create_workbook, validate_workbook
 
@@ -80,6 +81,48 @@ def test_long_slide_copy_is_wrapped_and_shortened_without_canvas_overflow(tmp_pa
     assert layout["text_overflow"] is False
     assert layout["headline_truncated"] is True
     assert layout["summary_truncated"] is True
+
+
+def test_template_renderer_uses_all_three_layouts_and_required_original_logos(tmp_path):
+    story = fixture_story("FIXTURE ONLY: Central bank signals a policy path for domestic markets", "INDIA", "layout-variants")
+    lead_path = tmp_path / "lead.png"
+    brief_path = tmp_path / "brief.png"
+    stats_path = tmp_path / "stats.png"
+
+    lead = render_slide(story, 1, 3, lead_path)
+    brief = render_slide(story, 2, 3, brief_path)
+    for source in story.articles:
+        source.description = "FIXTURE ONLY: The report records an investment of $2 billion and a 15% increase in the cited period."
+    statistics = render_slide(story, 3, 3, stats_path)
+
+    assert lead["layout_type"] == "lead"
+    assert brief["layout_type"] == "brief"
+    assert statistics["layout_type"] == "statistics"
+    assert all(item["logo_assets_validated"] for item in (lead, brief, statistics))
+    assert all(Image.open(path).size == (1080, 1350) for path in (lead_path, brief_path, stats_path))
+    asset_dir = Path(__file__).parents[1] / "assets"
+    assert (asset_dir / "dms_iitd_logo.png").is_file()
+    assert (asset_dir / "ppc_logo.jpeg").is_file()
+    with Image.open(asset_dir / "dms_iitd_logo.png") as original_dms:
+        dms_ratio = original_dms.width / original_dms.height
+    with Image.open(asset_dir / "ppc_logo.jpeg") as original_ppc:
+        ppc_ratio = original_ppc.width / original_ppc.height
+    assert _logo_at_size(str((asset_dir / "dms_iitd_logo.png").resolve()), 262, 140).width / _logo_at_size(str((asset_dir / "dms_iitd_logo.png").resolve()), 262, 140).height == pytest.approx(dms_ratio, rel=0.01)
+    assert _logo_at_size(str((asset_dir / "ppc_logo.jpeg").resolve()), 122, 130).width / _logo_at_size(str((asset_dir / "ppc_logo.jpeg").resolve()), 122, 130).height == pytest.approx(ppc_ratio, rel=0.01)
+    with pytest.raises(FileNotFoundError, match="Required editorial logo asset"):
+        render_slide(story, 1, 1, tmp_path / "missing-assets.png", assets_dir=tmp_path / "no-assets")
+
+
+def test_source_authored_summary_merges_distinct_reports_without_inventing_copy():
+    story = fixture_story("FIXTURE ONLY: Central bank publishes a policy note on market liquidity", "INDIA", "merge-summary")
+
+    summary = deterministic_summary(story.articles)
+    takeaways = deterministic_key_takeaways(story.articles)
+
+    assert "synthetic classroom report" in summary
+    assert "separate imaginary desk" in summary
+    assert takeaways
+    assert all(item in " ".join(article.description for article in story.articles) for item in takeaways)
 
 
 def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monkeypatch):
@@ -217,10 +260,10 @@ def test_current_trusted_single_source_becomes_marked_review_draft(tmp_path, mon
     assert "NEEDS_REVIEW" in caption
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
     assert manifest["selected_stories"][0]["verification_status"] == "NEEDS_REVIEW"
-    assert "independent corroboration is missing" in manifest["selected_stories"][0]["selection_reason"]
+    assert "editor draft" in manifest["selected_stories"][0]["selection_reason"]
 
 
-def test_review_drafts_exclude_unknown_publishers_and_sensitive_topics():
+def test_review_drafts_exclude_unknown_publishers_but_keep_sensitive_items_flagged():
     unknown = article(
         "FIXTURE ONLY: Local city opens a new commuter station",
         "https://unknown.example.test/station",
@@ -235,7 +278,9 @@ def test_review_drafts_exclude_unknown_publishers_and_sensitive_topics():
     )
 
     assert _eligible_review_draft(build_story([unknown], "fixture-batch", now=NOW)) is False
-    assert _eligible_review_draft(build_story([sensitive], "fixture-batch", now=NOW)) is False
+    sensitive_story = build_story([sensitive], "fixture-batch", now=NOW)
+    assert sensitive_story.verification_status == "NEEDS_REVIEW"
+    assert _eligible_review_draft(sensitive_story) is True
 
 
 def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch):
@@ -262,13 +307,13 @@ def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch
     )
 
     assert summary["workflow_complete"] is True
-    assert summary["matched_trends_by_region"] == {"INDIA": 4, "WORLD": 4}
+    assert summary["matched_trends_by_region"] == {"INDIA": 3, "WORLD": 4}
     assert summary["selected_by_region"] == {"INDIA": 3, "WORLD": 3}
     assert summary["images_generated"] == 6
     assert summary["slide_limit_respected"] is True
 
 
-def test_no_trend_match_never_places_a_fallback_story_in_the_carousel(tmp_path, monkeypatch):
+def test_untrusted_no_trend_items_do_not_enter_the_carousel(tmp_path, monkeypatch):
     records = [
         article(
             "FIXTURE ONLY: Local library opens a community reading room",
@@ -310,7 +355,38 @@ def test_no_trend_match_never_places_a_fallback_story_in_the_carousel(tmp_path, 
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
         assert sum(name.endswith(".png") for name in names) == 0
-    assert "No story passed today's Google Trends and trusted-source checks" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+    assert "No current MBA-relevant item from a curated trusted source" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+
+
+def test_current_trusted_business_reports_produce_unconfirmed_fallback_when_trends_are_missing(tmp_path, monkeypatch):
+    story = fixture_story(
+        "FIXTURE ONLY: Central bank holds interest rate after inflation review",
+        "INDIA",
+        "rbi-interest-rate",
+    )
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: (story.articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
+    )
+
+    summary = run_daily(
+        root=Path.cwd(),
+        output_root=tmp_path / "output",
+        history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW,
+        sources=[],
+        trend_signals=[],
+    )
+    date_dir = tmp_path / "output" / "2026-10-13"
+    manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
+
+    assert summary["images_generated"] == 1
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["trend_selection_mode"] == "EDITORIAL_FALLBACK_NEEDS_TREND_REVIEW"
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["publication_ready"] is False
+    assert manifest["selected_stories"][0]["trend_status"] == "NOT_CONFIRMED_FALLBACK"
+    assert "TREND UNCONFIRMED" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
 
 
 def test_trend_volume_threshold_must_be_positive(tmp_path):
@@ -386,7 +462,7 @@ def test_pipeline_keeps_unverified_untrended_stories_out_of_carousel(tmp_path, m
         assert "verification_manifest.json" in names
         assert sum(name.endswith(".png") for name in names) == 0
     caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
-    assert "No story passed today's Google Trends and trusted-source checks" in caption
+    assert "No current MBA-relevant item from a curated trusted source" in caption
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
     assert manifest["selected_stories"] == []
 

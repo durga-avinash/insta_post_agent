@@ -12,6 +12,7 @@ from PIL import Image
 
 from .caption import make_caption
 from .collector import collect_sources
+from .classify import is_mba_relevant, mba_relevance_score
 from .history import NewsHistory
 from .models import Article, Story, TrendSignal
 from .normalize import normalize_title
@@ -36,15 +37,12 @@ MAX_STORIES_PER_REGION = 3
 MAX_SLIDES = 6
 DEFAULT_MIN_TREND_SEARCHES = 1_000
 
-_REVIEWABLE_SINGLE_SOURCE_REASONS = {
-    "Only one publisher domain was retrieved for this event",
-    "Reports are not independently corroborated (same or suspected syndicated source)",
-    "Fewer than two independent reports came from curated trusted publishers or primary public sources",
-}
-
 
 def _caption_section(story: Story) -> str:
-    return f"{story.headline}\n{story.summary}\nSource: {story.publisher} — {story.original_url}"
+    links = list(dict.fromkeys(article.url for article in story.articles if article.url))
+    if story.original_url and story.original_url not in links:
+        links.insert(0, story.original_url)
+    return f"{story.headline}\n{story.summary}\nSources: {story.publisher}\n" + "\n".join(links)
 
 
 def _fresh_articles(articles: list[Article], now: datetime, max_age_hours: int) -> tuple[list[Article], int, int]:
@@ -62,36 +60,49 @@ def _fresh_articles(articles: list[Article], now: datetime, max_age_hours: int) 
     return fresh, stale, future
 
 
-def _eligible_review_draft(story: Story) -> bool:
-    """Allow a clearly marked human-review draft only when basic source data exists.
+def _eligible_review_draft(story: Story, *, allow_approved: bool = False) -> bool:
+    """Allow evidence-backed current items into the editor queue, never as approved posts.
 
-    Single-source items are useful to a human editor, but missing evidence, conflicting
-    descriptions, sensitive claims, or uncertain chronology should remain out of slides.
+    Verification flags belong in the package and slide badge. Requiring a clean automated
+    verification here caused the empty-carousel failure: items needing human review were
+    discarded before an editor could inspect them. Unknown-only or evidence-free items
+    still cannot enter the draft queue.
     """
-    if story.verification_status != "NEEDS_REVIEW":
+    accepted_statuses = {"NEEDS_REVIEW", "APPROVED"} if allow_approved else {"NEEDS_REVIEW"}
+    if story.verification_status not in accepted_statuses:
         return False
     if not story.original_url.startswith("https://") or not story.publisher.strip() or not story.summary.strip():
         return False
     if not story.articles or not story.evidence:
         return False
-    # Drafts must come from one accountable curated source; an unknown domain
-    # or an unsafe secondary report must never be smuggled into review slides.
-    domains = {article.source_domain for article in story.articles}
-    if len(domains) != 1 or not all(is_trusted_source_domain(domain) for domain in domains):
+    trusted_reports = [
+        article for article in story.articles
+        if is_trusted_source_domain(article.source_domain)
+        and article.description.strip()
+        and article.published_at is not None
+    ]
+    if not trusted_reports:
         return False
-    if any(not article.description.strip() or article.published_at is None for article in story.articles):
-        return False
-    reasons = set(story.verification_reasons)
-    return bool(reasons) and reasons.issubset(_REVIEWABLE_SINGLE_SOURCE_REASONS)
+    reject_terms = ("sponsored", "advertisement", "quiz", "horoscope", "newsletter", "podcast")
+    return not any(term in story.headline.casefold() for term in reject_terms)
 
 
 def _has_recent_report(story: Story, now: datetime, max_age_hours: int = 24) -> bool:
     cutoff = now - timedelta(hours=max_age_hours)
     return any(
         article.published_at is not None
+        and is_trusted_source_domain(article.source_domain)
         and cutoff <= article.published_at.astimezone(timezone.utc) <= now + timedelta(minutes=10)
         for article in story.articles
     )
+
+
+def _is_mba_story(story: Story) -> bool:
+    return any(is_mba_relevant(article.title, article.description) for article in story.articles)
+
+
+def _mba_score(story: Story) -> float:
+    return max((mba_relevance_score(article.title, article.description) for article in story.articles), default=0.0)
 
 
 def _best_unused_trend_evidence(story: Story, used_topics: set[str]) -> dict[str, object] | None:
@@ -149,6 +160,7 @@ def _make_summary(
         "batch_date": date_text,
         "candidates_collected": sum(len(s.articles) for s in candidates),
         "distinct_story_clusters": len(candidates),
+        "mba_relevant_clusters": sum(_is_mba_story(story) for story in candidates),
         "stories_approved": sum(s.verification_status == "APPROVED" for s in candidates),
         "stories_needs_review": sum(s.verification_status == "NEEDS_REVIEW" for s in candidates),
         "stories_rejected": sum(s.verification_status == "REJECTED" for s in candidates),
@@ -196,7 +208,8 @@ def _make_summary(
             s.verification_status != "APPROVED" or s.trend_status != "CONFIRMED_GOOGLE_TRENDS" for s in selected
         ),
         "trend_selection_mode": (
-            "TRENDS_MATCHED_REVIEW_DRAFT" if any(story.verification_status == "NEEDS_REVIEW" for story in selected)
+            "EDITORIAL_FALLBACK_NEEDS_TREND_REVIEW" if any(story.trend_status == "NOT_CONFIRMED_FALLBACK" for story in selected)
+            else "TRENDS_MATCHED_REVIEW_DRAFT" if any(story.verification_status == "NEEDS_REVIEW" for story in selected)
             else "GOOGLE_TRENDS_MATCHED" if selected
             else "TRENDS_NEED_SOURCE_REVIEW" if trend_matched_review_needed
             else "NO_ELIGIBLE_CONTENT"
@@ -271,7 +284,7 @@ def run_daily(
     current_trends, stale_trend_count = fresh_trend_signals(raw_trends, now=clock, max_age_hours=24)
     if trend_signals is None:
         try:
-            max_trend_queries = int(os.getenv("NEWS_TREND_QUERIES_PER_GEO", "10"))
+            max_trend_queries = int(os.getenv("NEWS_TREND_QUERIES_PER_GEO", "20"))
         except ValueError as exc:
             raise ValueError("NEWS_TREND_QUERIES_PER_GEO must be a positive whole number") from exc
         if max_trend_queries < 1:
@@ -319,7 +332,7 @@ def run_daily(
     if failed_trend_feeds:
         warnings.append("Google Trends feeds unavailable: " + ", ".join(failed_trend_feeds))
     if not current_trends:
-        warnings.append("No fresh Google Trends evidence was obtained; no story can be selected for a trending carousel")
+        warnings.append("No fresh Google Trends evidence was obtained; any selected daily editorial fallback is explicitly marked TREND UNCONFIRMED and needs human review")
 
     clusters = merge_specific_trend_coverage(cluster_articles(fresh_articles), current_trends)
     candidates = [build_story(group, batch_id, now=clock) for group in clusters if group]
@@ -336,7 +349,7 @@ def run_daily(
     for region in ("INDIA", "WORLD"):
         recent_stories = [
             story for story in candidates
-            if story.region == region and _has_recent_report(story, clock)
+            if story.region == region and _has_recent_report(story, clock) and _is_mba_story(story)
         ]
         confirmed = [story for story in recent_stories if story.trend_status == "CONFIRMED_GOOGLE_TRENDS"]
         if not allow_repeat:
@@ -353,13 +366,14 @@ def run_daily(
         fallback_by_region[region] = 0
         approved_pool = [story for story in confirmed if story.verification_status == "APPROVED"]
         review_pool = [story for story in confirmed if _eligible_review_draft(story)]
-        # Fully corroborated stories rank first. If none fill the daily slots,
-        # show only clean, current, trend-matched stories from curated sources
-        # as clearly marked NEEDS_REVIEW drafts for the editor.
+        # Trending, fully corroborated stories rank first. Any current trend-matched
+        # story with trusted source evidence can fill review slots, even when a date,
+        # conflict, or sensitivity flag prevents automated approval. It remains a draft.
         approved_pool.sort(
             key=lambda story: (
                 max(int(item["approximate_searches_lower_bound"]) for item in story.trend_evidence),
                 len({str(item["geo"]) for item in story.trend_evidence}),
+                _mba_score(story),
                 story.trend_score,
             ),
             reverse=True,
@@ -368,6 +382,7 @@ def run_daily(
             key=lambda story: (
                 max(int(item["approximate_searches_lower_bound"]) for item in story.trend_evidence),
                 len({str(item["geo"]) for item in story.trend_evidence}),
+                _mba_score(story),
                 story.trend_score,
             ),
             reverse=True,
@@ -400,9 +415,46 @@ def run_daily(
             warnings.append(
                 f"{region}: included {review_drafts_kept} trend-matched draft(s) from trusted sources for human review; these are not independently corroborated and are not publication-ready"
             )
+        if kept == 0:
+            # Source outages and a day dominated by off-topic searches must not
+            # erase every usable daily draft. This is a safety-labelled editorial
+            # fallback from current trusted reporting, never described as trending.
+            fallback_pool = [
+                story for story in recent_stories
+                if story.verification_status != "REJECTED"
+                and story.trend_status != "CONFIRMED_GOOGLE_TRENDS"
+                and _eligible_review_draft(story, allow_approved=True)
+            ]
+            fallback_pool.sort(
+                key=lambda story: (_mba_score(story), story.trend_score, story.credibility_score),
+                reverse=True,
+            )
+            for story in fallback_pool:
+                key = cluster_key(story.articles)
+                signature = "\n".join(article.title for article in story.articles)
+                if not allow_repeat and state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
+                    continue
+                story.trend_status = "NOT_CONFIRMED_FALLBACK"
+                story.verification_status = "NEEDS_REVIEW"
+                story.verification_reasons.append(
+                    "No same-region Google Trends match was available; this current trusted-source item is an editorial review fallback and must not be called trending"
+                )
+                selected.append(story)
+                selected_event_keys.append((key, signature))
+                fallback_by_region[region] += 1
+                kept += 1
+                if kept == MAX_STORIES_PER_REGION:
+                    break
+            if fallback_by_region[region]:
+                warnings.append(
+                    f"{region}: {fallback_by_region[region]} current trusted-source item(s) were added as TREND UNCONFIRMED editorial drafts; review them and do not describe them as trending"
+                )
         if kept < MAX_STORIES_PER_REGION:
+            trend_kept = kept - fallback_by_region[region]
             if kept:
-                warnings.append(f"{region}: selected {kept} Google Trends-matched story/stories; fewer than {MAX_STORIES_PER_REGION} met the evidence and high-trend requirements")
+                warnings.append(
+                    f"{region}: selected {trend_kept} Google Trends-matched story/stories and {fallback_by_region[region]} unconfirmed editorial fallback(s); fewer than {MAX_STORIES_PER_REGION} met trend and source criteria"
+                )
             else:
                 review_only = sum(
                     story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
@@ -412,7 +464,7 @@ def run_daily(
                 )
                 detail = f" {review_only} trend-matched candidate(s) needing source review remain in the workbook." if review_only else ""
                 warnings.append(
-                    f"{region}: no story passed both current Google Trends matching and trusted independent-source verification; no slide was generated.{detail}"
+                    f"{region}: no MBA-relevant current trusted story was available for a slide.{detail}"
                 )
     date_dir = output_root / local_date
     date_dir.mkdir(parents=True, exist_ok=True)
@@ -428,7 +480,7 @@ def run_daily(
                 raise ValueError(f"Slide has wrong dimensions: {filename}")
         if layout["text_overflow"]:
             warnings.append(f"Text layout needs inspection on {filename}")
-        if layout.get("headline_truncated") or layout.get("summary_truncated"):
+        if layout.get("headline_truncated") or layout.get("summary_truncated") or layout.get("takeaways_truncated"):
             warnings.append(
                 f"Slide text was shortened to fit {filename}; the complete headline and summary remain in the workbook and caption"
             )
@@ -437,8 +489,8 @@ def run_daily(
     caption = make_caption(selected)
     if not selected:
         caption = (
-            f"No story passed today's Google Trends and trusted-source checks for {local_date}. "
-            "No carousel post is ready. Review the workbook's News_Master and Verification_Log for candidates."
+            f"No current MBA-relevant item from a curated trusted source was available for {local_date}. "
+            "No slide was created. Review the workbook's News_Master and Verification_Log for rejected or stale candidates."
         )
     caption_path = date_dir / "carousel_caption.txt"
     caption_path.write_text(caption + "\n", encoding="utf-8")
@@ -464,8 +516,10 @@ def run_daily(
                 "google_trends_approximate_searches": "lower bound from Google Trends RSS traffic bucket; not an exact count",
                 "trend_geographies": "number of configured Google Trends locations reporting the query",
                 "headline_match_strength": "transparent token/phrase similarity between source headlines and a fresh Google Trends query or dated Google News RSS coverage for that query; exact related-news URL matches are also accepted",
+                "mba_relevance": "deterministic business/economy/policy/geopolitics/healthcare/technology/energy/supply-chain topic match; general-interest items are excluded from slides",
             },
-            "minimum_google_trends_searches": min_searches,
+        "minimum_google_trends_searches": min_searches,
+        "mba_relevant_candidates": sum(_is_mba_story(story) for story in candidates),
             "matched_by_region": matched_by_region,
             "unconfirmed_fallbacks_by_region": fallback_by_region,
             "maximum_per_region": MAX_STORIES_PER_REGION,
@@ -473,7 +527,7 @@ def run_daily(
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; prefer fresh stories matched to a current same-region Google Trends signal and corroborated by at least two independent curated trusted publishers or primary sources; when none qualify, allow only clean, trend-matched stories from one curated trusted source as visibly marked NEEDS_REVIEW drafts for manual verification; do not substitute unconfirmed fallback stories; never exceed three per region",
+            "selection": "separate India and international rankings; prioritize current same-region Google Trends volume, MBA relevance, and independent trusted-source corroboration; include trend-matched NEEDS_REVIEW items as explicitly marked editor drafts when a material verification flag remains; if a region has no match, include current trusted-source editorial fallback only as TREND UNCONFIRMED; never exceed three per region",
             "trend_score_note": "Trend scores are internal ranking indicators derived from Google Trends approximate traffic buckets and match strength; only the raw traffic bucket is Google-provided, and its count is approximate.",
         },
         "selected_stories": [
@@ -481,13 +535,15 @@ def run_daily(
                 "news_id": story.news_id,
                 "region": story.region,
                 "verification_status": story.verification_status,
-                "human_review_required": story.verification_status == "NEEDS_REVIEW",
+                "human_review_required": story.verification_status == "NEEDS_REVIEW" or story.trend_status != "CONFIRMED_GOOGLE_TRENDS",
                 "trend_status": story.trend_status,
                 "trend_evidence": story.trend_evidence,
                 "selection_reason": (
-                    "Matched a fresh Google Trends signal and passed automated trusted-source corroboration; the editor still reviews source links before manual publication."
+                    "Current report from a curated trusted publisher retained as an editorial fallback because the same-region Google Trends feed did not match it. Trend status is unconfirmed; check original reports and never label it trending without evidence."
+                    if story.trend_status == "NOT_CONFIRMED_FALLBACK" else
+                    "Matched a fresh Google Trends signal and passed automated trusted-source checks; an editor must still inspect the source links before manual publication."
                     if story.verification_status == "APPROVED" else
-                    "Matched a fresh Google Trends signal and has a current report from a curated trusted publisher, but independent corroboration is missing; this is a human-review draft and must not be published until the editor checks the original report and confirms its claims."
+                    "Matched a fresh Google Trends signal and has current trusted-source evidence, but one or more automated checks need review. This is an editor draft, not a truth certification or publication approval."
                 ),
             }
             for story in selected
@@ -500,7 +556,8 @@ def run_daily(
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
             "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
             "APPROVED slides require a current Google Trends match and at least two independent curated trusted sources; no fallback story is presented as trending.",
-            "A NEEDS_REVIEW slide is included only as an explicitly marked review draft when a curated trusted publisher provides a current dated report with a description and no automated conflict, sensitivity, or consistency flags. It is not approved or publication-ready.",
+            "A NEEDS_REVIEW slide is an editor draft, not a truth certification or publication approval. It may carry unresolved date, conflict, sensitivity, or corroboration flags; open the source pages and resolve those flags before use.",
+            "If Google Trends cannot confirm a story, a current trusted-source item can be provided as an editorial fallback, visibly marked TREND UNCONFIRMED. It is not represented as trending.",
         ],
     }
     manifest_path = date_dir / "verification_manifest.json"

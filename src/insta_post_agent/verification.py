@@ -145,17 +145,68 @@ def compare_reports(articles: list[Article]) -> tuple[list[Evidence], list[str],
     return evidence, reasons, score
 
 
-def deterministic_summary(articles: list[Article], max_chars: int = 190) -> str:
-    # Use only source-supplied text; no extra context or causal claims are introduced.
-    candidate = next((clean_html_text(a.description) for a in articles if a.description.strip()), "")
-    if not candidate:
+def _source_sentences(articles: list[Article]) -> list[tuple[str, str, str]]:
+    """Return unique, source-authored sentences with their source and independence IDs."""
+    groups = source_independence_groups(articles)
+    candidates: list[tuple[str, str, str]] = []
+    seen: list[set[str]] = []
+    for article in articles:
+        text = clean_html_text(article.description)
+        for raw in re.split(r"(?<=[.!?])\s+|\s+[|•]\s+", text):
+            sentence = raw.strip(" \t\r\n-–—•")
+            if len(sentence) < 26:
+                continue
+            tokens = _core_terms(sentence)
+            if not tokens:
+                continue
+            if any(
+                len(tokens & prior) / max(1, len(tokens | prior)) >= 0.72
+                or len(tokens & prior) / max(1, min(len(tokens), len(prior))) >= 0.86
+                for prior in seen
+            ):
+                continue
+            seen.append(tokens)
+            candidates.append((sentence, article.source_domain, groups.get(_article_evidence_key(article), article.source_domain)))
+    return candidates
+
+
+def _fit_sentences(sentences: list[str], max_chars: int) -> list[str]:
+    result: list[str] = []
+    used = 0
+    for sentence in sentences:
+        separator = 1 if result else 0
+        remaining = max_chars - used - separator
+        if remaining < 28:
+            break
+        if len(sentence) > remaining:
+            clipped = sentence[: remaining - 1].rsplit(" ", 1)[0].rstrip(".,;:")
+            if len(clipped) >= 24:
+                result.append(clipped + "…")
+            break
+        result.append(sentence)
+        used += separator + len(sentence)
+    return result
+
+
+def deterministic_summary(articles: list[Article], max_chars: int = 330) -> str:
+    """Merge distinct source descriptions extractively; never add facts or causal claims."""
+    candidates = _source_sentences(articles)
+    if not candidates:
         return "Source descriptions were unavailable. Open the original report before using this story."
-    first = re.split(r"(?<=[.!?])\s+", candidate, maxsplit=1)[0].strip()
-    sentence = first or candidate
-    if len(sentence) > max_chars:
-        clipped = sentence[: max_chars - 1].rsplit(" ", 1)[0].rstrip(".,;:")
-        sentence = clipped + "…"
-    return sentence
+    # Keep the trusted lead's sentence first, then add a distinct line from
+    # another independent publisher when present. Both remain source-authored
+    # excerpts, so merging does not silently turn into model-authored fact.
+    chosen = [candidates[0][0]]
+    lead_group = candidates[0][2]
+    second = next((sentence for sentence, _, group in candidates[1:] if group != lead_group), None)
+    if second:
+        chosen.append(second)
+    return " ".join(_fit_sentences(chosen, max_chars))
+
+
+def deterministic_key_takeaways(articles: list[Article], limit: int = 3) -> list[str]:
+    """Select up to three distinct source-authored details for the slide template."""
+    return [sentence for sentence, _, _ in _source_sentences(articles)[:max(0, limit)]]
 
 
 def build_story(articles: list[Article], batch_id: str, now: datetime | None = None) -> Story:

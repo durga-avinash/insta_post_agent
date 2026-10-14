@@ -1,27 +1,39 @@
 # Insta Post Agent
 
-A zero-cost, review-first daily news carousel generator. It gathers public publisher RSS metadata and Google Trends RSS signals, groups likely duplicate coverage, applies transparent editorial checks, draws up to six portrait slides with Pillow, and packages a formatted workbook, caption, and evidence manifest. It does not post to Instagram.
+A free, review-first daily news carousel generator for DMS IIT Delhi's MBA audience. It gathers public RSS coverage and Google Trends RSS signals, joins reports about the same event, ranks business and policy-relevant stories, and creates up to six editable 1080 × 1350 slides. Instagram posting remains manual.
 
-## What it does
+## What the daily run produces
 
-- Checks a configurable set of India and world RSS feeds. Feed failures are recorded, not hidden.
-- Keeps the source headline, publisher, original URL, publication time, retrieval time, RSS description, and canonical URL with each candidate.
-- Deduplicates canonical URLs and clusters similar headlines. It reads Google's public Trending Now RSS exports for India, the United States, and the United Kingdom, then searches dated Google News RSS coverage for up to the 10 highest-volume current topics per country, taking up to 20 articles per query by default. Reports from one search response can be grouped only when the same trend query has at least three distinctive terms and each report matches it; source-independence and claim checks still run per original publisher article. A story must match the same-region Google Trends query using at least two specific terms, or match a related publisher article URL exactly. One-word or generic topics cannot confirm a story through keyword overlap. The approximate traffic bucket must meet `NEWS_MIN_TREND_SEARCHES` (default 1,000); it is a lower bound, not an exact count. International signals identify a country market, not worldwide totals. Query and article limits are configurable with `NEWS_TREND_QUERIES_PER_GEO` and `NEWS_TREND_ARTICLES_PER_QUERY`.
-- Automatically approves only clusters with descriptions and timestamps from at least two independent curated trusted publishers or primary public sources, with no detected uncertainty, sensitive-topic, or conflict flags. The displayed headline and summary are anchored to a curated publisher when one is present; uncurated reports cannot lead the slide. Publisher independence is counted per original article URL, not per RSS query feed. Other sources remain visible in the verification log but cannot raise a story to `APPROVED` until added to the curated list in `verification.py`. Automated approval is an internal editorial signal, not a fact-check guarantee; editors still check original reports before manual publication.
-- India and international results are ranked separately, with a hard maximum of three stories in each region; fewer are allowed. Fresh, Google Trends-matched `APPROVED` stories are preferred. If those do not fill the daily slots, a clean current story from one curated trusted publisher can appear as an explicitly marked `NEEDS_REVIEW` slide draft, provided its dated RSS description has no automated conflict, sensitive-topic, or consistency flags. These drafts are not called verified or publication-ready; the editor must open the original report and confirm the claims. Unconfirmed trend matches, unknown publishers, conflicting reports, and unsafe topics stay out of the carousel. A zero-slide package is still possible if none pass these minimum checks.
-- Builds source-bound summaries without an LLM by default. An optional OpenAI-compatible editing helper is available in `editor.py`; it is not enabled in the daily pipeline. No API key is required, and no provider is selected or assumed to be free. If you later wire in a provider, confirm its current free plan and terms first.
-- Draws clearly illustrative editorial graphics, not event photographs. Output is 1080 × 1350 pixels (4:5), with text rendered by Pillow.
-- Writes `output/YYYY-MM-DD/` with the workbook, caption, evidence manifest, summary, zero to six slides, and a ZIP. The manifest retains feed failures, raw trend queries, approximate volumes, associated news links, match evidence, and verification reasons.
+- Up to three India stories and up to three international stories. The slide count changes with the evidence available; six is a ceiling, not a requirement.
+- Current high-interest topics matched against real Google Trends traffic buckets for the same region. The bucket is an approximate lower bound, not an exact query count.
+- MBA-focused categories: business and markets, economy and policy, geopolitics and security, healthcare, technology and industry, climate and energy, and infrastructure and supply chains. General entertainment and sports stories do not enter the slide queue unless their source text also contains a matching management or industry topic.
+- Publisher reports are deduplicated by canonical URL and grouped by event. Google News results for a specific trend can join independently worded reports; wire copies and identical descriptions do not count as independent corroboration.
+- One source-merged editorial record, one evidence log, and one deterministic source-extractive summary per event. The app does not launch a second article crawl to repeat checks already supported by the collected reports.
+- Automated approval only when at least two independent curated trusted publishers or primary sources support the item and the automated consistency checks find no review flags. Current trusted stories with a date, conflict, sensitivity, or corroboration flag remain visible as `NEEDS_REVIEW` drafts so the editor can inspect them; they are not publication-approved.
+- If a region has no direct Google Trends match, the workflow can still create a current trusted-source editorial fallback. The slide and caption say `TREND UNCONFIRMED`; it must not be described as trending. Unknown-source, missing-evidence, promotional, and stale items stay out.
+- No LLM API is required. Headlines, summaries, takeaways, source checks, artwork, workbook, and package are produced deterministically from collected source material. The optional editor helper is not enabled in the daily workflow.
 
-## Sources and usage
+## Editorial slide design
 
-Publisher feeds live in [`config/sources.json`](config/sources.json); trend feeds are configured in [`config/trend_sources.json`](config/trend_sources.json). Google documents RSS as an export format on its [Trending Now help page](https://support.google.com/trends/answer/3076011), where Trending Now represents queries experiencing a recent search-interest surge tied to a news story. Publisher feed availability and access policies can change; each run records both publisher-feed and trend-search status and continues when an individual feed fails. The application reads RSS only and does not crawl publisher article pages. Review publisher terms before redistributing or using output commercially.
+The renderer rebuilds the uploaded `Daily News Nuggets Editorial Template.png` as editable Pillow text and fixed vector geometry; it does not use the sample as a flattened background. It uses the provided original logos from `assets/dms_iitd_logo.png` and `assets/ppc_logo.jpeg`, preserving their aspect ratios. It has no photographs, people, maps, or story-specific illustrations.
 
-RSS headlines and short descriptions can omit context, corrections, or the original event date. In particular, the workbook's event-date field stays blank unless a separate event date is available; a publication date is shown as a publication date, not silently relabeled as the event date. The manifest explains these limits and retains the retrieved source fields for review.
+The cream, navy, pale-blue, and yellow layout carries a dynamic region/category strip, headline, source-derived summary, up to three source-authored key takeaways (or source-derived figures), date, publisher names, review/trend labels, and slide count. Reusable lead, short-brief, and statistics layouts share the same header and footer. Text wraps and scales to defined limits; any shortened copy remains complete in the workbook and caption and is reported in `summary.json`.
+
+## Sources, trend evidence, and limits
+
+Publisher feeds are configured in [`config/sources.json`](config/sources.json); Google Trends regions are in [`config/trend_sources.json`](config/trend_sources.json). The collector uses RSS metadata, RSS descriptions, and Google News RSS search results. It does not scrape publisher pages or bypass paywalls. RSS can omit context, event dates, corrections, and full article details, so editors must open the original links before manual publication.
+
+The verification log preserves each retrieved URL, publisher, independence group, headline/description comparison, uncertainty flags, decision, and reason. Unknown publishers can remain visible in the workbook as evidence but cannot make a story automatically approved. A confident model response is never used as fact-check certification.
+
+When Google Trends returns no useful same-region signal, the workflow does not invent a search statistic. It can offer a relevant current trusted-source draft with an explicit unconfirmed status. If no fresh trusted business/policy-relevant source material is available at all, no program can guarantee an accurate post that day; the batch reports the shortfall rather than fabricating a story.
+
+## Output package
+
+Each run writes `output/YYYY-MM-DD/` with `Daily_News_Report.xlsx`, `carousel_caption.txt`, `verification_manifest.json`, `summary.json`, zero to six slides, and `content_package.zip`. The ZIP includes the workbook, caption, manifest, and every generated slide. The workbook has `News_Master`, `Verification_Log`, and `Publishing_Queue` sheets. URLs, source text, reasons, trend status, and manual review status remain visible for the team.
 
 ## Local use
 
-Python 3.11 or later is the supported runtime.
+Python 3.11 or later is supported.
 
 ```powershell
 python -m venv .venv
@@ -32,30 +44,25 @@ python -m pytest -q
 python -m insta_post_agent.cli --output-root output --history-path state/news_history.sqlite3
 ```
 
-The app needs outbound HTTPS to the configured public RSS endpoints. The optional model variables in `.env.example` are not needed. Do not place credentials in the public repository.
+Required output logos are packaged with the repository. Network access is needed only for the configured public feeds; there are no paid services or required secrets.
 
-`NEWS_MIN_TREND_SEARCHES` is read from the process environment and defaults to `1000`; set it to raise or lower the approximate Google Trends traffic bucket required for a `TRENDING` label. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to 20 so source searches can collect enough independent coverage; lower it if you need to reduce response volume. The system searches current topics but includes no newsroom fallback slide when evidence is missing. GitHub Actions allows a same-day retry to regenerate a package; local runs suppress a completed duplicate by default. The `.env.example` file documents these settings but is not loaded automatically.
+Settings in `.env.example` are documented values; the application does not load that file automatically. `NEWS_MIN_TREND_SEARCHES` defaults to `1000` and `NEWS_TREND_QUERIES_PER_GEO` defaults to `20`; the collector checks more of the day's trend topics to find relevant business stories. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to `20`. Raising the minimum trend threshold will reduce the number of trend-confirmed stories.
 
 ## Daily GitHub Actions schedule
 
-`.github/workflows/daily-news.yml` runs at `03:30 UTC`, which is `09:00 India Standard Time (UTC+05:30)`, and supports manual dispatch. GitHub can delay scheduled jobs, so article publication times are checked against a 36-hour window by default; stale and future-dated items are excluded. Workflow concurrency prevents overlapping runs on the same ref. The SQLite history skips exact or similar events seen in the previous two days, and a completed local-date batch cannot be generated twice.
+`.github/workflows/daily-news.yml` runs at `03:30 UTC`, which is `09:00 India Standard Time (UTC+05:30)`, and supports manual dispatch. GitHub can delay scheduled jobs. The code checks source freshness and trend freshness, so a delayed or missed run will not quietly relabel stale reporting as today's news.
 
-History is a small SQLite file outside the repository. The workflow restores and saves it through GitHub Actions cache, then artifacts and logs are uploaded without committing generated output. Cache is best-effort: GitHub can evict cache entries after seven days without access, and cache availability/limits are controlled by repository and account settings. If the cache is missing, the run continues with a fresh local database and records the limitation. No private database or generated news package is pushed to Git. Workflow retries rebuild today's package so a same-day rerun does not stop before artifact creation; recent stories are still excluded during selection.
+The action restores/saves a small SQLite recent-story file through GitHub Actions cache. Cache is best-effort and can expire; a cache miss is recorded and the current batch continues. Generated content is uploaded as a downloadable artifact retained for 14 days and is not committed to the public repository. Public repository Actions usage is generally free within GitHub's applicable limits; GitHub controls account quotas, artifact storage, cache behavior, and scheduling. No billing integration is enabled. GitHub can disable scheduled runs after a prolonged period without repository activity, so check the Actions page periodically.
 
-The content artifact is retained for 14 days. After a run, open the repository's **Actions** tab, select **Daily news carousel**, open the latest run, and download the `daily-news-<run id>` artifact. The artifact includes the ZIP, workbook, and batch summary. When evidence allows, the ZIP includes trend-matched review drafts; if feeds fail or no current trusted report meets the checks, it contains a zero-slide report and states why. RSS and Trends availability cannot guarantee a publishable post every calendar day without weakening the trust checks or inventing content. Build failures may upload diagnostics and partial output. Standard GitHub-hosted runners are free for public repositories; artifact/cache storage is still subject to account quotas and retention settings. Public-repository schedules are automatically disabled after 60 days without repository activity, so check the Actions page periodically and re-enable the workflow if GitHub disables it.
+## Download and review
 
-GitHub Actions usage and retention depend on the account plan and repository settings. This workflow uses no paid service or billing integration; check the account's Actions usage page before relying on long-term daily runs.
-
-## Review the package
-
-1. Open `summary.json`. Check `workflow_complete`, `content_available`, `batch_status`, `images_generated`, `selected_by_region`, and `slide_limit_respected`. Every slide must match a fresh same-region Google Trends signal and come from a curated trusted publisher. `APPROVED` means at least two independent sources passed the automated checks. `NEEDS_REVIEW` means it is an editor draft from a single trusted publisher and must not be published until you read and verify the linked report. `NO_PUBLISHABLE_STORIES` means even the review-draft checks did not pass.
-2. Read `verification_manifest.json` and the workbook's `Verification_Log` before using any story.
-3. Check every source link and the full linked article, especially for sensitive or developing stories.
-4. Review slide attributions and the caption, then publish manually if appropriate.
-
-The package's `APPROVED` status is not a guarantee that every fact is correct. It reports only that the limited automated checks passed. The source RSS descriptions can omit context or corrections; an editor should check the original reports before publication. No Instagram credentials or autoposting code are included.
+1. Open the repository's **Actions** tab and choose **Daily news carousel**.
+2. Open the latest successful run and download `daily-news-<run id>`.
+3. In the ZIP, review `summary.json` and `verification_manifest.json`, then inspect every slide and the workbook's `Verification_Log`.
+4. Open the original reporting linked in the caption or workbook. Resolve every `NEEDS_REVIEW` flag. A `TREND UNCONFIRMED` item is not a trending claim.
+5. Approve and publish manually only after the team has read the sources. There are no Instagram credentials or autoposting features.
 
 ## Tests
 
-Tests use synthetic, clearly labeled fixtures and mock network/model responses. They cover publisher and Google Trends RSS parsing, approximate traffic buckets, strict trend matching and freshness, timestamps, URL normalization, deduplication, clustering, classification, publisher independence across shared Google News query IDs, trusted-source verification gating, the no-key fallback, LLM payload validation/retry, image dimensions/layout, variable-size and empty packages, workbook sheets, repeat-story history, caption attribution, and package contents. They do not require API keys or live news.
+Automated tests use synthetic, labelled fixtures and mock network/model responses. They cover feed parsing and retries, dates and canonical URLs, clustering and syndicated-copy checks, trend matching and fallback labels, MBA relevance, review gating, extractive summaries, required logo assets and the three template layouts, overflow, workbook structure, variable slide counts, repeat-batch handling, caption links, and ZIP completeness. They run without API keys or live news.
 

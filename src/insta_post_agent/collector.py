@@ -44,7 +44,13 @@ def make_session() -> requests.Session:
 
 
 def _entry_timestamp(entry: Any) -> datetime | None:
+    # Feedparser's mapping compatibility layer warns when a missing parsed-date
+    # field is probed with .get(). Inspect actual keys first so absent optional
+    # fields stay quiet while genuine Atom updated timestamps still work.
+    entry_keys = set(entry.keys())
     for key in ("published_parsed", "updated_parsed"):
+        if key not in entry_keys:
+            continue
         parsed = entry.get(key)
         if parsed:
             try:

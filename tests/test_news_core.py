@@ -53,7 +53,7 @@ def test_url_deduplication_and_story_clustering():
 def test_region_category_and_transparent_trend_components():
     assert classify_region("WORLD", "Indian court issues fixture ruling", "Fixture text") == "INDIA"
     assert classify_region("WORLD", "Fixture climate talks begin", "A synthetic climate meeting") == "WORLD"
-    assert classify_category("Fixture central bank decision", "A synthetic policy note") == "Economy"
+    assert classify_category("Fixture central bank decision", "A synthetic policy note") == "Economy & Policy"
     first = article("Fixture election policy report", "https://one.example.test/a", "one.example.test")
     second = article("Fixture election policy report update", "https://two.example.test/b", "two.example.test")
     score, components = trend_score([first, second], now=NOW)
@@ -80,4 +80,5 @@ def test_feed_error_detail_preserves_http_status_without_logging_response_body()
     error.response = type("Response", (), {"status_code": 403, "text": "private response detail"})()
     assert feed_error_detail(error) == "HTTP 403"
     assert feed_error_detail(requests.Timeout()) == "Timeout"
+
 
