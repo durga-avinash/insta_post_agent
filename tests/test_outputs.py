@@ -129,6 +129,28 @@ def test_source_authored_summary_merges_distinct_reports_without_inventing_copy(
     assert all(item not in summary for item in takeaways)
 
 
+def test_summary_skips_rss_headline_echo_when_feed_has_no_added_context():
+    story = fixture_story(
+        "FIXTURE ONLY: Central bank lifts sample policy rates",
+        "INDIA",
+        "headline-echo",
+    )
+    for source in story.articles:
+        source.title = "FIXTURE ONLY: Central bank lifts sample policy rates"
+        source.description = (
+            "FIXTURE ONLY: Central bank lifts sample policy rates. "
+            "FIXTURE ONLY: Central bank lifts sample policy rates. "
+            "The fictional decision takes effect next month."
+        )
+
+    summary = deterministic_summary(story.articles)
+    takeaways = deterministic_key_takeaways(story.articles)
+
+    assert "fictional decision takes effect next month" in summary
+    assert "Central bank lifts sample policy rates" not in summary
+    assert all(item not in summary for item in takeaways)
+
+
 def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monkeypatch):
     titles = [
         ("INDIA", "FIXTURE ONLY: Kerala districts add clean water monitoring sensors", "water-sensors"),
