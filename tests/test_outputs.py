@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import zipfile
 from datetime import timedelta
+from email.utils import format_datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from insta_post_agent.pipeline import _best_unused_trend_evidence, _eligible_edi
 from insta_post_agent.render import _logo_at_size, render_slide
 from insta_post_agent.verification import deterministic_key_takeaways, deterministic_summary
 from insta_post_agent.verification import build_story
+from insta_post_agent.trends import collect_candidate_coverage
 from insta_post_agent.workbook import create_workbook, validate_workbook
 
 from test_news_core import NOW, article
@@ -432,6 +434,102 @@ def test_three_independent_trusted_publishers_are_audited_as_coverage_trend_fall
     assert signal["independent_publisher_count"] == 3
     assert len(signal["evidence_urls"]) == 3
     assert "search-volume or social-media metric" in selected["selection_reason"]
+
+
+def test_targeted_google_news_coverage_accepts_only_fresh_trusted_distinct_event_reports():
+    story = fixture_story(
+        "FIXTURE ONLY: Central bank holds interest rate after inflation review",
+        "INDIA", "targeted-coverage", now=NOW,
+    )
+    items = [
+        ("Business Standard", "https://www.business-standard.com", "FIXTURE ONLY: Central bank holds interest rate after inflation review", "A separate fixture report explains the effect on lending markets." , NOW - timedelta(minutes=5)),
+        ("NDTV Profit", "https://www.ndtv.com", "FIXTURE ONLY: Central bank holds interest rate after inflation review", "A second synthetic outlet describes the central bank decision and market response." , NOW - timedelta(minutes=8)),
+        ("Unknown Blog", "https://unknown.example", "FIXTURE ONLY: Central bank holds interest rate after inflation review", "A third synthetic outlet describes the central bank decision and market response." , NOW - timedelta(minutes=6)),
+        ("BBC", "https://www.bbc.com", "FIXTURE ONLY: Central bank holds interest rate after inflation review", "This is the original source domain and must not increase pickup." , NOW - timedelta(minutes=6)),
+        ("Reuters", "https://www.reuters.com", "FIXTURE ONLY: Central bank holds interest rate after inflation review", "This synthetic report is stale and must not increase current pickup." , NOW - timedelta(hours=30)),
+        ("Business Standard", "https://www.business-standard.com", "FIXTURE ONLY: Cricket team announces a test series", "An unrelated fixture event must not be attached." , NOW - timedelta(minutes=6)),
+    ]
+    rss_items = []
+    for index, (publisher, publisher_url, title, description, published_at) in enumerate(items):
+        rss_items.append(
+            "<item>"
+            f"<title>{title} - {publisher}</title>"
+            f"<link>https://news.google.com/rss/articles/FIXTURE_{index}</link>"
+            f'<source url="{publisher_url}">{publisher}</source>'
+            f"<description>{description}</description>"
+            f"<pubDate>{format_datetime(published_at)}</pubDate>"
+            "</item>"
+        )
+    rss = ("<rss version='2.0'><channel>" + "".join(rss_items) + "</channel></rss>").encode()
+
+    class FakeResponse:
+        content = rss
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class FakeSession:
+        calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse()
+
+    session = FakeSession()
+    matched, status = collect_candidate_coverage([story], now=NOW, session=session, min_delay_seconds=0)
+
+    additions = matched[story.news_id]
+    assert {item.source_domain for item in additions} == {"business-standard.com", "ndtv.com"}
+    assert len(additions) == 2
+    assert status[0]["trusted_matching_publishers"] == "2"
+    assert len(session.calls) == 1
+    assert "when:2d" in session.calls[0][1]["params"]["q"]
+
+
+def test_targeted_coverage_is_integrated_before_india_story_selection(tmp_path, monkeypatch):
+    story = fixture_story(
+        "FIXTURE ONLY: Central bank holds interest rate after inflation review",
+        "INDIA", "targeted-integration",
+    )
+    extra = article(
+        story.headline,
+        "https://apnews.com/fixture/targeted-integration",
+        "apnews.com",
+        description="FIXTURE ONLY: An independent test report explains the synthetic decision's implications for business lending.",
+        region="INDIA", published_at=NOW - timedelta(minutes=6), source_id="coverage-ap",
+    )
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: (story.articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
+    )
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_trend_signals",
+        lambda *args, **kwargs: ([], [{"source_id": "fixture-trends", "status": "OK", "items": "0"}]),
+    )
+
+    def coverage_search(stories, **kwargs):
+        candidate = next(item for item in stories if item.region == "INDIA")
+        return {candidate.news_id: [extra]}, [{
+            "news_id": candidate.news_id, "region": candidate.region, "headline": candidate.headline,
+            "status": "OK", "items": "1", "trusted_matching_publishers": "1",
+        }]
+
+    monkeypatch.setattr("insta_post_agent.pipeline.collect_candidate_coverage", coverage_search)
+    summary = run_daily(
+        root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW, sources=[], trend_signals=None,
+    )
+
+    date_dir = tmp_path / "output" / "2026-10-13"
+    manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
+    selected = manifest["selected_stories"][0]
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["cross_publisher_coverage_signals_by_region"]["INDIA"] == 1
+    assert summary["targeted_coverage_articles_collected"] == 1
+    assert selected["selection_basis"] == "CROSS_PUBLISHER_COVERAGE"
+    assert selected["trend_evidence"][0]["independent_publisher_count"] == 3
+    assert len(selected["trend_evidence"][0]["evidence_urls"]) == 3
 
 
 def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(tmp_path, monkeypatch):
