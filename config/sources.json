@@ -1,10 +1,34 @@
 [
   {
-    "id": "indian-express-india",
-    "name": "The Indian Express",
-    "url": "https://indianexpress.com/section/india/feed/",
+    "id": "business-standard-india",
+    "name": "Business Standard",
+    "url": "https://www.business-standard.com/rss/india-news-216.rss",
     "region": "INDIA",
-    "section": "India",
+    "section": "India news",
+    "source_type": "publisher"
+  },
+  {
+    "id": "business-standard-markets",
+    "name": "Business Standard",
+    "url": "https://www.business-standard.com/rss/markets-106.rss",
+    "region": "INDIA",
+    "section": "Markets",
+    "source_type": "publisher"
+  },
+  {
+    "id": "hindustan-times-india",
+    "name": "Hindustan Times",
+    "url": "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
+    "region": "INDIA",
+    "section": "India news",
+    "source_type": "publisher"
+  },
+  {
+    "id": "hindustan-times-business",
+    "name": "Hindustan Times",
+    "url": "https://www.hindustantimes.com/feeds/rss/business/rssfeed.xml",
+    "region": "INDIA",
+    "section": "Business",
     "source_type": "publisher"
   },
   {
@@ -22,14 +46,6 @@
     "region": "INDIA",
     "section": "Government releases",
     "source_type": "primary"
-  },
-  {
-    "id": "indian-express-world",
-    "name": "The Indian Express",
-    "url": "https://indianexpress.com/section/world/feed/",
-    "region": "WORLD",
-    "section": "World",
-    "source_type": "publisher"
   },
   {
     "id": "bbc-world",

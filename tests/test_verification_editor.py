@@ -25,7 +25,7 @@ def test_independent_publishers_approve_and_shared_wire_needs_review():
     assert build_story([wire_one, wire_two], "fixture-batch", now=NOW).verification_status == "NEEDS_REVIEW"
 
 
-def test_automatic_approval_requires_two_curated_trusted_sources():
+def test_single_curated_source_is_enough_but_uncurated_cluster_stays_in_review():
     one = article("Fixture research institute publishes a clean energy report", "https://bbc.com/fixture/a", "bbc.com")
     two = article("Fixture clean energy report published by a research institute", "https://unknown.example.test/b", "unknown.example.test")
     story = build_story([one, two], "fixture-batch", now=NOW)
@@ -34,10 +34,10 @@ def test_automatic_approval_requires_two_curated_trusted_sources():
     assert is_trusted_source_domain("www.reuters.com") is True
     assert is_trusted_source_domain("notreuters.com") is False
     assert story.verification_status == "NEEDS_REVIEW"
-    assert any("curated trusted publishers" in reason for reason in story.verification_reasons)
+    assert any("uncurated publisher" in reason for reason in story.verification_reasons)
 
 
-def test_uncurated_newer_report_cannot_lead_an_approved_story():
+def test_uncurated_newer_report_cannot_lead_and_flags_the_story_for_review():
     trusted_recent = article(
         "Fixture district leaders approve a coastal flood plan",
         "https://bbc.com/fixture/flood-plan",
@@ -62,7 +62,7 @@ def test_uncurated_newer_report_cannot_lead_an_approved_story():
 
     story = build_story([uncurated_newer, trusted_second, trusted_recent], "fixture-batch", now=NOW)
 
-    assert story.verification_status == "APPROVED"
+    assert story.verification_status == "NEEDS_REVIEW"
     assert story.headline == trusted_recent.title
     assert story.original_url == trusted_recent.url
 
@@ -84,7 +84,7 @@ def test_review_draft_fallback_rejects_sensitive_conflicted_or_evidence_poor_sto
         "bbc.com",
         description="A local library publishes a community reading report for nearby schools.",
     )
-    assert _eligible_review_draft(build_story([safe], "fixture-batch", now=NOW)) is True
+    assert _eligible_review_draft(build_story([safe], "fixture-batch", now=NOW)) is False
 
     sensitive = article(
         "Fixture local report confirms casualties after a crash",
@@ -163,4 +163,3 @@ def test_llm_retries_malformed_schema_then_returns_validated_result():
     )
     assert result is not None
     assert session.calls == 2
-

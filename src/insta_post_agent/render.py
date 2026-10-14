@@ -182,6 +182,10 @@ def _draw_brand_header(draw: ImageDraw.ImageDraw, slide_number: int, total: int,
     if story.selection_basis == "EDITORIAL_BACKUP":
         trend_label = "EDITOR BACKUP"
         trend_fill, trend_ink = "#F5E4B4", "#765410"
+    elif story.selection_basis == "CROSS_PUBLISHER_COVERAGE":
+        count = next((item.get("independent_publisher_count") for item in story.trend_evidence if item.get("signal_type") == "independent_publisher_coverage"), None)
+        trend_label = f"COVERAGE  {count}+ SOURCES" if count else "WIDE COVERAGE"
+        trend_fill, trend_ink = "#D6E8D6", "#234E35"
     elif story.trend_status == "CONFIRMED_GOOGLE_TRENDS" and story.trend_evidence:
         traffic = str(story.trend_evidence[0].get("approx_traffic") or "TREND MATCHED")
         trend_label = f"TRENDS  {traffic}"
@@ -248,7 +252,7 @@ def _layout_type(story: Story, slide_number: int) -> str:
 
 def _draw_headline(draw: ImageDraw.ImageDraw, story: Story, layout_type: str) -> tuple[int, bool, bool]:
     status = "NEEDS HUMAN REVIEW" if story.verification_status == "NEEDS_REVIEW" else (
-        "TREND UNCONFIRMED" if story.trend_status != "CONFIRMED_GOOGLE_TRENDS" else ""
+        "TREND UNCONFIRMED" if story.trend_status not in {"CONFIRMED_GOOGLE_TRENDS", "CONFIRMED_CROSS_PUBLISHER_COVERAGE"} else ""
     )
     _draw_section_label(draw, "HEADLINE", 475, status)
     sizes = {"lead": (84, 48), "brief": (72, 46), "statistics": (76, 46)}
@@ -416,4 +420,3 @@ def render_slide(
         "logo_assets_validated": True,
         "takeaways_truncated": takeaways_truncated,
     }
-

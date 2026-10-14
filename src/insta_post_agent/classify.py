@@ -5,7 +5,7 @@ import re
 
 CATEGORY_RULES = [
     ("Business & Markets", r"\b(business|company|companies|corporate|earnings|revenue|profit|profits|merger|acquisition|ipo|stocks?|shares|investors?|investment|startup|valuation|layoffs?|executive|ceo|bankruptcy|capital|funding|market cap|stock market|quarterly results|venture capital|equity|bond yields?|banking|credit|insurance|sponsorship|broadcast rights)\b"),
-    ("Economy & Policy", r"\b(economy|economic|gdp|inflation|budget|fiscal|monetary|central bank|reserve bank|rbi|interest rates?|repo rate|tax|tariff|trade policy|trade agreement|exports?|imports?|rupee|employment|unemployment|wages?|government spending|economic policy|regulation|parliament|finance minister|prime minister|supreme court ruling)\b"),
+    ("Economy & Policy", r"\b(economy|economic|gdp|inflation|budget|fiscal|monetary|central bank|reserve bank|rbi|interest rates?|repo rate|tax|tariff|trade policy|trade agreement|exports?|imports?|rupee|employment|unemployment|wages?|government|public policy|policies|cabinet|regulator|regulatory|government spending|economic policy|regulation|parliament|legislation|finance minister|prime minister|supreme court|high court)\b"),
     ("Geopolitics & Security", r"\b(geopolitics?|diplomacy|diplomatic|sanctions?|ceasefire|armed conflict|conflict|war|military|defence|defense|security|border clash|invasion|treaty|alliance|nato|united nations|trade war|blockade|missile strike|airstrike)\b"),
     ("Healthcare", r"\b(healthcare|public health|hospital|clinic|clinics|laboratory|laboratories|biotech|biotechnology|pharma|pharmaceutical|drug approval|drug trial|clinical trial|vaccine|disease outbreak|outbreak|epidemic|pandemic|medical device|health ministry|health policy)\b"),
     ("Technology & Industry", r"\b(technology|tech sector|artificial intelligence|\bai\b|semiconductor|chipmaker|data centre|data center|cybersecurity|cyber attack|telecom|software company|robotics|patent|manufacturing|industry|industrial|automotive|electric vehicle|evs?)\b"),
@@ -21,7 +21,7 @@ MBA_PRIORITY_CATEGORIES = frozenset({
 
 _MBA_SIGNAL = re.compile(
     r"\b(earnings|revenue|profits?|merger|acquisition|ipo|stocks?|shares|investors?|investment|startup|valuation|layoffs?|ceo|bankruptcy|funding|market cap|stock market|quarterly results|venture capital|equity|bond yields?|banking|credit|insurance|sponsorship|broadcast rights|"
-    r"economy|economic|gdp|inflation|budget|fiscal|monetary|central bank|reserve bank|rbi|interest rates?|repo rate|tax|tariff|trade policy|trade agreement|exports?|imports?|rupee|employment|unemployment|wages?|government spending|economic policy|regulation|finance minister|"
+    r"economy|economic|gdp|inflation|budget|fiscal|monetary|central bank|reserve bank|rbi|interest rates?|repo rate|tax|tariff|trade policy|trade agreement|exports?|imports?|rupee|employment|unemployment|wages?|government|public policy|policies|cabinet|regulator|regulatory|government spending|economic policy|regulation|legislation|supreme court|high court|finance minister|"
     r"geopolitics?|diplomacy|diplomatic|sanctions?|ceasefire|armed conflict|conflict|war|military|defence|defense|security|border clash|invasion|treaty|nato|united nations|trade war|blockade|missile strike|airstrike|"
     r"healthcare|public health|hospital|clinics?|biotech|biotechnology|pharma|pharmaceutical|drug approval|drug trial|clinical trial|vaccine|disease outbreak|outbreak|epidemic|pandemic|medical device|health ministry|health policy|"
     r"technology|tech sector|artificial intelligence|semiconductor|chipmaker|data centre|data center|cybersecurity|cyber attack|telecom|software company|robotics|patent|manufacturing|industrial|automotive|electric vehicle|"
@@ -35,7 +35,7 @@ _GENERAL_INTEREST_CONTEXT = re.compile(
     flags=re.IGNORECASE,
 )
 _SPECIFIC_BUSINESS_SIGNAL = re.compile(
-    r"\b(earnings|revenue|profits?|merger|acquisition|ipo|stock market|market cap|quarterly results|venture capital|funding|valuation|bond yields?|interest rates?|inflation|gdp|tax|tariff|trade policy|trade agreement|exports?|imports?|sanctions?|ceasefire|war|armed conflict|drug approval|clinical trial|vaccine|outbreak|biotech|biotechnology|semiconductor|cybersecurity|renewable|oil prices?|power grid|supply chain|shipping|infrastructure|water quality|clean water|ecosystem|biodiversity|ice retreat|polar ice|mangrove|transit station|metro station|rail(ways?)?)\b",
+    r"\b(earnings|revenue|profits?|merger|acquisition|ipo|stock market|market cap|quarterly results|venture capital|funding|valuation|bond yields?|interest rates?|inflation|gdp|tax|tariff|trade policy|trade agreement|exports?|imports?|government|public policy|policies|cabinet|regulator|regulatory|parliament|legislation|supreme court|high court|sanctions?|ceasefire|war|armed conflict|drug approval|clinical trial|vaccine|outbreak|biotech|biotechnology|semiconductor|cybersecurity|renewable|oil prices?|power grid|supply chain|shipping|infrastructure|water quality|clean water|ecosystem|biodiversity|ice retreat|polar ice|mangrove|transit station|metro station|rail(ways?)?)\b",
     flags=re.IGNORECASE,
 )
 
@@ -84,4 +84,3 @@ def classify_region(source_region: str, title: str, description: str) -> str:
         text,
     )
     return "INDIA" if india_signal else source_region.upper()
-

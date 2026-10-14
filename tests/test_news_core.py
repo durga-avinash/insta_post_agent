@@ -99,7 +99,9 @@ def test_feed_retry_policy_and_source_registry_load():
     session.close()
     sources = load_sources(Path(__file__).parents[1] / "config" / "sources.json")
     assert {source.region for source in sources} == {"INDIA", "WORLD"}
-    assert len(sources) >= 6
+    source_ids = {source.id for source in sources}
+    assert {"business-standard-india", "business-standard-markets", "hindustan-times-india", "hindustan-times-business", "bbc-india", "pib-india"}.issubset(source_ids)
+    assert len(sources) >= 8
 
 
 def test_feed_error_detail_preserves_http_status_without_logging_response_body():
@@ -109,5 +111,4 @@ def test_feed_error_detail_preserves_http_status_without_logging_response_body()
     error.response = type("Response", (), {"status_code": 403, "text": "private response detail"})()
     assert feed_error_detail(error) == "HTTP 403"
     assert feed_error_detail(requests.Timeout()) == "Timeout"
-
 

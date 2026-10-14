@@ -19,7 +19,7 @@ from .normalize import normalize_title
 from .render import render_slide
 from .scoring import cluster_articles, cluster_key, deduplicate_articles
 from .sources import load_sources
-from .verification import build_story, is_trusted_source_domain
+from .verification import build_story, is_trusted_source_domain, source_independence_groups
 from .workbook import create_workbook, validate_workbook
 from .trends import (
     apply_trend_evidence,
@@ -36,6 +36,8 @@ IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 MAX_STORIES_PER_REGION = 3
 MAX_SLIDES = 6
 DEFAULT_MIN_TREND_SEARCHES = 10_000
+MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL = 3
+CONFIRMED_TREND_STATUSES = frozenset({"CONFIRMED_GOOGLE_TRENDS", "CONFIRMED_CROSS_PUBLISHER_COVERAGE"})
 
 
 def _caption_section(story: Story) -> str:
@@ -129,6 +131,44 @@ def _coverage_profile(story: Story) -> tuple[int, int]:
     return len(domains), len(independent_groups)
 
 
+def _cross_publisher_coverage_signal(story: Story, now: datetime) -> dict[str, object] | None:
+    """Return a cited coverage signal from recent curated reports, never a search count.
+
+    Three distinct trusted outlets in the latest 24 hours can substitute for an
+    unavailable/off-topic Google Trends match. Known wire copies and identical
+    descriptions collapse into one source group, so syndication cannot inflate it.
+    """
+    cutoff = now.astimezone(timezone.utc) - timedelta(hours=24)
+    reports = [
+        article for article in story.articles
+        if article.published_at is not None
+        and cutoff <= article.published_at.astimezone(timezone.utc) <= now.astimezone(timezone.utc) + timedelta(minutes=10)
+        and article.description.strip()
+        and article.url.startswith("https://")
+        and is_trusted_source_domain(article.source_domain)
+    ]
+    groups = source_independence_groups(reports)
+    group_to_articles: dict[str, list[Article]] = {}
+    for article in reports:
+        group = groups.get(article.canonical_url or article.id, article.source_domain)
+        group_to_articles.setdefault(group, []).append(article)
+    independent_groups = sorted(group_to_articles)
+    publishers = sorted({article.source_domain for article in reports if article.source_domain})
+    if len(publishers) < MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL or len(independent_groups) < MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL:
+        return None
+    evidence_urls = list(dict.fromkeys(
+        article.url for group in independent_groups for article in group_to_articles[group]
+    ))
+    return {
+        "signal_type": "independent_publisher_coverage",
+        "window_hours": 24,
+        "independent_publisher_count": len(independent_groups),
+        "publisher_domains": publishers,
+        "evidence_urls": evidence_urls,
+        "interpretation": "High cross-publisher coverage proxy; not a search-volume or social-media measurement",
+    }
+
+
 def _has_recent_report(story: Story, now: datetime, max_age_hours: int = 24) -> bool:
     cutoff = now - timedelta(hours=max_age_hours)
     return any(
@@ -145,6 +185,10 @@ def _is_mba_story(story: Story) -> bool:
 
 def _mba_score(story: Story) -> float:
     return max((mba_relevance_score(article.title, article.description) for article in story.articles), default=0.0)
+
+
+def _has_confirmed_trend_signal(story: Story) -> bool:
+    return story.trend_status in CONFIRMED_TREND_STATUSES
 
 
 def _best_unused_trend_evidence(story: Story, used_topics: set[str]) -> dict[str, object] | None:
@@ -175,7 +219,9 @@ def _make_summary(
     text_layout_valid: bool,
     min_trend_searches: int,
     matched_by_region: dict[str, int],
+    coverage_by_region: dict[str, int],
     fallback_by_region: dict[str, int],
+    region_diagnostics: dict[str, dict[str, int]],
     trends_collected: int,
     fresh_trends: int,
     trend_news_articles_collected: int,
@@ -191,11 +237,11 @@ def _make_summary(
         and all(count <= MAX_STORIES_PER_REGION for count in selected_by_region.values())
     )
     publication_ready = bool(selected) and all(
-        story.verification_status == "APPROVED" and story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
+        story.verification_status == "APPROVED" and _has_confirmed_trend_signal(story)
         for story in selected
     )
     trend_matched_review_needed = any(
-        story.verification_status == "NEEDS_REVIEW" and story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
+        story.verification_status == "NEEDS_REVIEW" and _has_confirmed_trend_signal(story)
         for story in candidates
     )
     return {
@@ -218,7 +264,9 @@ def _make_summary(
         "trend_news_articles_collected": trend_news_articles_collected,
         "google_trend_news_feed_status": trend_news_feed_status,
         "matched_trends_by_region": matched_by_region,
+        "cross_publisher_coverage_signals_by_region": coverage_by_region,
         "unconfirmed_fallbacks_by_region": fallback_by_region,
+        "region_selection_diagnostics": region_diagnostics,
         "selected_story_status": [
             {
                 "slide_region": story.region,
@@ -232,10 +280,12 @@ def _make_summary(
                         "query": item.get("query"),
                         "approx_traffic": item.get("approx_traffic"),
                         "match_method": item.get("match_method"),
+                        "signal_type": item.get("signal_type"),
+                        "independent_publisher_count": item.get("independent_publisher_count"),
                     }
                     for item in story.trend_evidence
                 ],
-                "human_review_required": story.verification_status == "NEEDS_REVIEW" or story.trend_status != "CONFIRMED_GOOGLE_TRENDS",
+                "human_review_required": story.verification_status == "NEEDS_REVIEW" or not _has_confirmed_trend_signal(story),
             }
             for story in selected
         ],
@@ -248,10 +298,13 @@ def _make_summary(
         "zip_created": zip_ok,
         "publication_ready": publication_ready,
         "human_review_required": trend_matched_review_needed or any(
-            s.verification_status != "APPROVED" or s.trend_status != "CONFIRMED_GOOGLE_TRENDS" for s in selected
+            s.verification_status != "APPROVED" or not _has_confirmed_trend_signal(s) for s in selected
         ),
         "trend_selection_mode": (
-            "EDITORIAL_BACKUP_NO_TREND" if any(story.selection_basis == "EDITORIAL_BACKUP" for story in selected)
+            "MIXED_TREND_AND_EDITORIAL_BACKUP" if any(story.selection_basis == "EDITORIAL_BACKUP" for story in selected) and any(_has_confirmed_trend_signal(story) for story in selected)
+            else "EDITORIAL_BACKUP_NO_TREND" if any(story.selection_basis == "EDITORIAL_BACKUP" for story in selected)
+            else "MULTI_SIGNAL_TREND" if any(story.trend_status == "CONFIRMED_CROSS_PUBLISHER_COVERAGE" for story in selected) and any(story.trend_status == "CONFIRMED_GOOGLE_TRENDS" for story in selected)
+            else "CROSS_PUBLISHER_COVERAGE" if any(story.trend_status == "CONFIRMED_CROSS_PUBLISHER_COVERAGE" for story in selected)
             else "TRENDS_MATCHED_REVIEW_DRAFT" if any(story.verification_status == "NEEDS_REVIEW" for story in selected)
             else "GOOGLE_TRENDS_MATCHED" if selected
             else "TRENDS_NEED_SOURCE_REVIEW" if trend_matched_review_needed
@@ -389,11 +442,14 @@ def run_daily(
     selected: list[Story] = []
     selected_event_keys: list[tuple[str, str]] = []
     matched_by_region: dict[str, int] = {}
+    coverage_by_region: dict[str, int] = {}
     fallback_by_region: dict[str, int] = {}
+    region_diagnostics: dict[str, dict[str, int]] = {}
     for region in ("INDIA", "WORLD"):
+        regional_clusters = [story for story in candidates if story.region == region]
         recent_stories = [
-            story for story in candidates
-            if story.region == region and _has_recent_report(story, clock) and _is_mba_story(story)
+            story for story in regional_clusters
+            if _has_recent_report(story, clock) and _is_mba_story(story)
         ]
         confirmed = [story for story in recent_stories if story.trend_status == "CONFIRMED_GOOGLE_TRENDS"]
         if not allow_repeat:
@@ -408,6 +464,21 @@ def run_daily(
             ]
         matched_by_region[region] = len(confirmed)
         fallback_by_region[region] = 0
+        coverage_candidates: list[tuple[Story, dict[str, object]]] = []
+        for story in recent_stories:
+            if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" or not _eligible_editorial_backup(story, clock):
+                continue
+            signal = _cross_publisher_coverage_signal(story, clock)
+            if signal is not None:
+                coverage_candidates.append((story, signal))
+        coverage_by_region[region] = len(coverage_candidates)
+        region_diagnostics[region] = {
+            "fresh_story_clusters": len(regional_clusters),
+            "recent_trusted_mba_story_clusters": len(recent_stories),
+            "google_trends_matched_candidates": len(confirmed),
+            "independent_coverage_candidates": len(coverage_candidates),
+            "selected_for_carousel": 0,
+        }
         approved_pool = [story for story in confirmed if story.verification_status == "APPROVED"]
         review_pool = [story for story in confirmed if _eligible_review_draft(story)]
         # Trending, fully corroborated stories rank first. Any current trend-matched
@@ -452,13 +523,49 @@ def run_daily(
             kept += 1
             if kept == MAX_STORIES_PER_REGION:
                 break
-        if kept == 0:
+        coverage_candidates.sort(
+            key=lambda pair: (
+                int(pair[1]["independent_publisher_count"]),
+                _coverage_profile(pair[0])[0],
+                _mba_score(pair[0]),
+                pair[0].trend_score,
+                max((article.published_at or datetime.min.replace(tzinfo=timezone.utc) for article in pair[0].articles), default=datetime.min.replace(tzinfo=timezone.utc)),
+            ),
+            reverse=True,
+        )
+        for story, signal in coverage_candidates:
+            if kept >= MAX_STORIES_PER_REGION:
+                break
+            key = cluster_key(story.articles)
+            signature = "\n".join(article.title for article in story.articles)
+            if not allow_repeat and state.seen_recently(key, signature=signature, days=repeat_days, now=clock):
+                story.freshness_status = "RECENTLY_SELECTED"
+                continue
+            story.selection_basis = "CROSS_PUBLISHER_COVERAGE"
+            story.trend_status = "CONFIRMED_CROSS_PUBLISHER_COVERAGE"
+            story.trend_evidence = [signal]
+            story.trend_score = round(
+                min(100.0, _mba_score(story) * 15 + int(signal["independent_publisher_count"]) * 10 + _coverage_profile(story)[0] * 5 + story.trend_score * 0.25),
+                2,
+            )
+            story.score_components = {
+                **story.score_components,
+                "independent_publisher_count_24h": float(signal["independent_publisher_count"]),
+                "trusted_publisher_domain_count_24h": float(len(signal["publisher_domains"])),
+                "cross_publisher_coverage_signal": 1.0,
+            }
+            selected.append(story)
+            selected_event_keys.append((key, signature))
+            kept += 1
+        if kept < MAX_STORIES_PER_REGION:
             # Public Trends can be dominated by topics outside this audience.
             # Keep an editorially useful daily draft from recent trusted reporting,
             # but expose clearly that it is not Google-Trends-confirmed.
+            selected_ids = {story.news_id for story in selected if story.region == region}
             backup_pool = [
                 story for story in recent_stories
-                if story.trend_status != "CONFIRMED_GOOGLE_TRENDS"
+                if story.news_id not in selected_ids
+                and story.trend_status != "CONFIRMED_GOOGLE_TRENDS"
                 and _eligible_editorial_backup(story, clock)
                 and (
                     allow_repeat
@@ -479,22 +586,23 @@ def run_daily(
                 ),
                 reverse=True,
             )
-            for story in backup_pool[:MAX_STORIES_PER_REGION]:
+            backup_kept = min(len(backup_pool), MAX_STORIES_PER_REGION - kept)
+            for story in backup_pool[:backup_kept]:
                 key = cluster_key(story.articles)
                 signature = "\n".join(article.title for article in story.articles)
                 story.selection_basis = "EDITORIAL_BACKUP"
                 story.trend_status = "UNCONFIRMED"
                 story.trend_evidence = []
                 story.verification_reasons.append(
-                    "No matching high-volume Google Trends signal was available; included as a clearly labeled editor backup, not as trending news"
+                    "No Google Trends match or three-source coverage signal was available; included as a clearly labeled editor draft, not as trending news"
                 )
                 selected.append(story)
                 selected_event_keys.append((key, signature))
-            kept = min(len(backup_pool), MAX_STORIES_PER_REGION)
-            fallback_by_region[region] = kept
-            if kept:
+            kept += backup_kept
+            fallback_by_region[region] = backup_kept
+            if backup_kept:
                 warnings.append(
-                    f"{region}: generated {kept} editorial backup draft(s) from current trusted MBA reporting; Google Trends did not confirm them as trending and human review is required"
+                    f"{region}: generated {backup_kept} editorial backup draft(s); neither Google Trends nor the independent-coverage threshold confirmed them as trending"
                 )
         review_drafts_kept = sum(
             story.region == region and story.selection_basis == "GOOGLE_TRENDS" and story.verification_status == "NEEDS_REVIEW"
@@ -504,26 +612,19 @@ def run_daily(
             warnings.append(
                 f"{region}: included {review_drafts_kept} trend-matched draft(s) from trusted sources for human review; these are not independently corroborated and are not publication-ready"
             )
+        coverage_kept = sum(story.region == region and story.selection_basis == "CROSS_PUBLISHER_COVERAGE" for story in selected)
+        if coverage_kept:
+            warnings.append(
+                f"{region}: selected {coverage_kept} story/stories using independent trusted-publisher coverage as a trend proxy; this is not Google search or social-media volume"
+            )
+        region_diagnostics[region]["selected_for_carousel"] = kept
         if kept < MAX_STORIES_PER_REGION:
-            if fallback_by_region[region]:
-                warnings.append(
-                    f"{region}: selected {kept} editorial backup draft(s); no story met the Google Trends threshold, so these are not labeled trending"
-                )
-            elif kept:
-                warnings.append(
-                    f"{region}: selected {kept} Google Trends-matched story/stories; fewer than {MAX_STORIES_PER_REGION} met MBA relevance, recency, trend volume, and evidence criteria"
-                )
-            else:
-                review_only = sum(
-                    story.trend_status == "CONFIRMED_GOOGLE_TRENDS"
-                    and story.verification_status == "NEEDS_REVIEW"
-                    and _has_recent_report(story, clock)
-                    for story in recent_stories
-                )
-                detail = f" {review_only} trend-matched candidate(s) needing source review remain in the workbook." if review_only else ""
-                warnings.append(
-                    f"{region}: no MBA-relevant trusted-source story met the fresh Google Trends match and volume threshold of {min_searches:,}+ searches.{detail}"
-                )
+            warnings.append(
+                f"{region}: {kept} slide(s) selected from {len(regional_clusters)} fresh clusters; "
+                f"{len(recent_stories)} passed the recent trusted-source MBA filter, {len(confirmed)} matched Google Trends, "
+                f"{len(coverage_candidates)} had three-source coverage, and {fallback_by_region[region]} were editorial backups. "
+                "The three-slide regional limit is a maximum, not a target."
+            )
     date_dir = output_root / local_date
     date_dir.mkdir(parents=True, exist_ok=True)
     slide_results = []
@@ -547,8 +648,8 @@ def run_daily(
     caption = make_caption(selected)
     if not selected:
         caption = (
-            f"No MBA-relevant, same-region Google Trends-matched story met the high-trend threshold for {local_date}. "
-            "No carousel slides were generated. Review the attached workbook for current trusted-source candidates and their evidence."
+            f"No fresh trusted-source MBA story passed the source, freshness, region, and topic filters for {local_date}. "
+            "No carousel slides were generated. Review the region diagnostics and workbook for the candidate shortfall."
         )
     caption_path = date_dir / "carousel_caption.txt"
     caption_path.write_text(caption + "\n", encoding="utf-8")
@@ -579,27 +680,31 @@ def run_daily(
         "minimum_google_trends_searches": min_searches,
         "mba_relevant_candidates": sum(_is_mba_story(story) for story in candidates),
             "matched_by_region": matched_by_region,
+            "cross_publisher_coverage_signals_by_region": coverage_by_region,
             "unconfirmed_fallbacks_by_region": fallback_by_region,
+            "region_selection_diagnostics": region_diagnostics,
             "maximum_per_region": MAX_STORIES_PER_REGION,
             "selected_by_region": {
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches above the configured traffic threshold; if a region has no qualifying trend match, select up to three current trusted MBA story drafts as EDITORIAL_BACKUP; backups are explicitly not trend-confirmed and require human approval; never exceed three per region",
-            "trend_score_note": "Trend scores are internal ranking indicators derived from Google Trends approximate traffic buckets and match strength; only the raw traffic bucket is Google-provided, and its count is approximate.",
+            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches, then stories reported by at least three independent trusted publishers within 24 hours; fill remaining slots with clearly labeled current trusted-source editor drafts; never exceed three stories per region",
+            "trend_score_note": "Google Trends uses its approximate traffic buckets. The alternate coverage proxy counts independent trusted publisher groups in the latest 24 hours; neither signal is a truth score, social-media count, or exact popularity measurement.",
         },
         "selected_stories": [
             {
                 "news_id": story.news_id,
                 "region": story.region,
                 "verification_status": story.verification_status,
-                "human_review_required": story.verification_status == "NEEDS_REVIEW" or story.trend_status != "CONFIRMED_GOOGLE_TRENDS",
+                "human_review_required": story.verification_status == "NEEDS_REVIEW" or not _has_confirmed_trend_signal(story),
                 "trend_status": story.trend_status,
                 "selection_basis": story.selection_basis,
                 "trend_evidence": story.trend_evidence,
                 "selection_reason": (
-                    "No matching high-volume Google Trends signal was available. Selected from fresh trusted-source MBA reporting as an editorial backup draft; it is not represented as trending and requires human review."
+                    "No Google Trends match or three-source coverage signal was available. Selected from fresh trusted-source MBA reporting as an editor draft; it is not represented as trending."
                     if story.selection_basis == "EDITORIAL_BACKUP" else
+                    f"At least {MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL} independent trusted publishers covered this fresh story within 24 hours. This is a coverage-based trend proxy, not a search-volume or social-media metric."
+                    if story.selection_basis == "CROSS_PUBLISHER_COVERAGE" else
                     "Matched a fresh same-region Google Trends signal and passed automated trusted-source checks; an editor must still inspect the source links before manual publication."
                     if story.verification_status == "APPROVED" else
                     "Matched a fresh Google Trends signal and has current trusted-source evidence, but one or more automated checks need review. This is an editor draft, not a truth certification or publication approval."
@@ -614,17 +719,17 @@ def run_daily(
             "The publication timestamp is not presented as an event date; event date stays blank unless explicitly supplied by a later verified source.",
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
             "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
-            "Only stories with a fresh same-region Google Trends match above the configured traffic threshold can enter slides; an unconfirmed source report is never presented as trending.",
-            "When no qualifying trend match exists for a region, fresh trusted-source MBA reports may be rendered as EDITORIAL_BACKUP drafts; they are not trend-confirmed and require human review.",
+            "A trend signal can come from a fresh same-region Google Trends match or coverage by at least three independent trusted publisher groups within 24 hours. The latter is a publisher-coverage proxy, not search or social-media volume.",
+            "When neither trend signal qualifies, fresh trusted-source MBA reports may fill available slots as EDITORIAL_BACKUP drafts; they are explicitly not described as trending.",
             "A NEEDS_REVIEW slide is an editor draft, not a truth certification or publication approval. It may carry unresolved date, conflict, sensitivity, or corroboration flags; open the source pages and resolve those flags before use.",
-            "Trusted-source reports without a qualifying Google Trends match remain available in News_Master for research but are not promoted to a slide.",
+            "A single curated trusted report can enter the manual editorial queue without requiring a second publisher's repetition. APPROVED means it passed source and automated consistency checks, not that it was independently corroborated or publication-approved.",
         ],
     }
     manifest_path = date_dir / "verification_manifest.json"
     _write_json(manifest_path, manifest)
 
     if not selected:
-        warnings.append("The daily report and ZIP are available, but no slide met the trending and verification requirements")
+        warnings.append("The daily report and ZIP are available, but no fresh trusted-source MBA story passed the source, freshness, region, and topic filters")
     content_paths = [workbook_path, caption_path, manifest_path]
     content_paths.extend(date_dir / str(item["path"]).split("\\")[-1].split("/")[-1] for item in slide_results)
     zip_path = date_dir / "content_package.zip"
@@ -640,7 +745,8 @@ def run_daily(
         workbook_ok=workbook_ok, zip_ok=zip_ok, warnings=warnings, history_persistence=history_persistence,
         text_layout_valid=not any(bool(item.get("text_overflow")) for item in slide_results),
         min_trend_searches=min_searches, matched_by_region=matched_by_region,
-        fallback_by_region=fallback_by_region, trends_collected=len(raw_trends), fresh_trends=len(current_trends),
+        coverage_by_region=coverage_by_region, fallback_by_region=fallback_by_region,
+        region_diagnostics=region_diagnostics, trends_collected=len(raw_trends), fresh_trends=len(current_trends),
         trend_news_articles_collected=len(trend_news_articles), trend_news_feed_status=trend_news_feed_status,
     )
     reason_counts = Counter(reason for story in candidates for reason in story.verification_reasons)
@@ -689,4 +795,3 @@ def run_daily(
         batch_id, len(articles), len(candidates), len(current_trends), len(trend_news_articles), summary["stories_approved"], len(slide_results), summary["trend_selection_mode"],
     )
     return summary
-

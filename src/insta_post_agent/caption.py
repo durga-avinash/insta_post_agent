@@ -6,8 +6,15 @@ from .models import Story
 def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     has_review_items = any(story.verification_status == "NEEDS_REVIEW" for story in stories)
     has_editorial_backup = any(story.selection_basis == "EDITORIAL_BACKUP" for story in stories)
-    has_unconfirmed_trend = any(story.trend_status != "CONFIRMED_GOOGLE_TRENDS" for story in stories)
-    if has_editorial_backup:
+    has_coverage_signal = any(story.selection_basis == "CROSS_PUBLISHER_COVERAGE" for story in stories)
+    confirmed_statuses = {"CONFIRMED_GOOGLE_TRENDS", "CONFIRMED_CROSS_PUBLISHER_COVERAGE"}
+    has_unconfirmed_trend = any(story.trend_status not in confirmed_statuses for story in stories)
+    if has_coverage_signal:
+        intro = "Trend signals use Google Trends where available and/or coverage by at least three independent trusted publishers in 24 hours. Publisher pickup is a coverage proxy, not a search-volume or social-media count."
+        if has_editorial_backup:
+            intro += " Editor-backup items below do not meet either trend signal."
+        closing = "Review the linked originals and any review flags; approve and publish manually."
+    elif has_editorial_backup:
         intro = "EDITORIAL BACKUP: Google Trends did not confirm these stories as trending today. They are current MBA-relevant drafts from trusted reporting; review before use."
         closing = "Open each original report and approve manually; do not describe backup stories as Google-Trends-confirmed."
     elif has_unconfirmed_trend:
@@ -23,7 +30,15 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     fixed: list[str] = []
     summaries: list[str] = []
     for index, story in enumerate(stories, start=1):
-        trend_label = "EDITOR BACKUP · NOT TREND-CONFIRMED" if story.selection_basis == "EDITORIAL_BACKUP" else "TREND MATCHED" if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" else "TREND UNCONFIRMED"
+        if story.selection_basis == "EDITORIAL_BACKUP":
+            trend_label = "EDITOR BACKUP · NOT TREND-CONFIRMED"
+        elif story.selection_basis == "CROSS_PUBLISHER_COVERAGE":
+            count = next((item.get("independent_publisher_count") for item in story.trend_evidence if item.get("signal_type") == "independent_publisher_coverage"), 0)
+            trend_label = f"WIDE COVERAGE · {count}+ INDEPENDENT PUBLISHERS"
+        elif story.trend_status == "CONFIRMED_GOOGLE_TRENDS":
+            trend_label = "GOOGLE TRENDS MATCHED"
+        else:
+            trend_label = "TREND UNCONFIRMED"
         links = list(dict.fromkeys(article.url for article in story.articles if article.url))
         links.extend(url for url in [story.original_url, *story.corroborating_urls] if url and url not in links)
         source_links = "\n".join(links)
@@ -46,4 +61,3 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[:max_chars]
-

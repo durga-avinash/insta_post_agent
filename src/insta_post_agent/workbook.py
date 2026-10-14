@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 from .models import Story
 
 HEADERS = {
-    "News_Master": ["News ID", "Batch ID", "Region", "Headline", "Summary", "Category", "Event date", "Publisher", "Original URL", "Corroborating source URLs", "Trend score", "Trend status", "Selection basis", "Google Trends evidence", "Score components", "Verification status", "Verification reasons", "Image path", "Caption", "Retrieval timestamp"],
+    "News_Master": ["News ID", "Batch ID", "Region", "Headline", "Summary", "Category", "Event date", "Publisher", "Original URL", "Corroborating source URLs", "Trend score", "Trend status", "Selection basis", "Trend / coverage evidence", "Score components", "Verification status", "Verification reasons", "Image path", "Caption", "Retrieval timestamp"],
     "Verification_Log": ["News ID", "Evidence URL", "Publisher", "Source independence assessment", "Claims checked", "Conflicts or uncertainty", "Decision", "Reason", "Verification timestamp"],
     "Publishing_Queue": ["Batch ID", "Target date", "Slide number", "News ID", "Image path", "Caption", "Freshness status", "Editorial approval status", "Manual publication status"],
 }
@@ -92,4 +92,3 @@ def validate_workbook(path: Path) -> bool:
         return True
     finally:
         wb.close()
-

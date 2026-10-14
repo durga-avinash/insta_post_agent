@@ -26,7 +26,7 @@ WIRE_CUES = {
 # appear in the evidence log, but it remains a human-review source until curated.
 TRUSTED_SOURCE_DOMAINS = frozenset({
     "apnews.com", "reuters.com", "afp.com", "bbc.com", "bbc.co.uk", "bbc.in",
-    "theguardian.com", "npr.org", "thehindu.com", "indianexpress.com",
+    "theguardian.com", "npr.org", "thehindu.com", "indianexpress.com", "business-standard.com",
     "hindustantimes.com", "timesofindia.indiatimes.com", "ndtv.com", "indiatoday.in",
     "scroll.in", "theprint.in", "livemint.com", "moneycontrol.com",
     "economictimes.indiatimes.com", "ndtvprofit.com", "yahoo.com", "nytimes.com", "washingtonpost.com", "wsj.com",
@@ -115,12 +115,14 @@ def compare_reports(articles: list[Article]) -> tuple[list[Evidence], list[str],
         if is_trusted_source_domain(article.source_domain)
     })
     reasons: list[str] = []
-    if len({a.source_domain for a in articles}) < 2:
-        reasons.append("Only one publisher domain was retrieved for this event")
-    if group_count < 2:
-        reasons.append("Reports are not independently corroborated (same or suspected syndicated source)")
-    if trusted_group_count < 2:
-        reasons.append("Fewer than two independent reports came from curated trusted publishers or primary public sources")
+    if len({a.source_domain for a in articles if a.source_domain}) < 2:
+        note = "Only one publisher domain was retrieved; this is recorded as limited coverage, not a truth failure"
+        for item in evidence:
+            item.claims_checked.append(note)
+    elif group_count < 2 or trusted_group_count < 2:
+        note = "Publisher copies were grouped as one source; they do not count as independent pickup"
+        for item in evidence:
+            item.claims_checked.append(note)
     if not any(a.description for a in articles):
         reasons.append("Source descriptions are missing; key claims cannot be compared")
     if any(a.published_at is None for a in articles):
@@ -205,8 +207,29 @@ def deterministic_summary(articles: list[Article], max_chars: int = 330) -> str:
 
 
 def deterministic_key_takeaways(articles: list[Article], limit: int = 3) -> list[str]:
-    """Select up to three distinct source-authored details for the slide template."""
-    return [sentence for sentence, _, _ in _source_sentences(articles)[:max(0, limit)]]
+    """Select source-authored details that add information beyond the summary."""
+    summary = deterministic_summary(articles)
+    summary_tokens = [
+        _core_terms(sentence)
+        for sentence in re.split(r"(?<=[.!?])\s+", summary)
+        if _core_terms(sentence)
+    ]
+    chosen: list[str] = []
+    chosen_tokens: list[set[str]] = []
+    for sentence, _, _ in _source_sentences(articles):
+        tokens = _core_terms(sentence)
+        repeated = any(
+            len(tokens & prior) / max(1, len(tokens | prior)) >= 0.42
+            or len(tokens & prior) / max(1, min(len(tokens), len(prior))) >= 0.72
+            for prior in [*summary_tokens, *chosen_tokens]
+        )
+        if repeated:
+            continue
+        chosen.append(sentence)
+        chosen_tokens.append(tokens)
+        if len(chosen) >= max(0, limit):
+            break
+    return chosen
 
 
 def build_story(articles: list[Article], batch_id: str, now: datetime | None = None) -> Story:
@@ -229,20 +252,24 @@ def build_story(articles: list[Article], batch_id: str, now: datetime | None = N
     if len(lead.title) < 18 or any(term in lead.title.lower() for term in reject_terms):
         status = "REJECTED"
         reasons.append("Headline appears to be non-news or promotional content")
-    elif (
-        len({item.independence for item in evidence}) < 2
-        or len({
-            source_independence_groups(ordered).get(_article_evidence_key(article), article.source_domain)
-            for article in ordered if is_trusted_source_domain(article.source_domain)
-        }) < 2
-        or not any(a.description for a in ordered)
-    ):
+    elif not any(is_trusted_source_domain(article.source_domain) for article in ordered):
+        status = "NEEDS_REVIEW"
+        reasons.append("No curated trusted publisher or primary source supports this story")
+    elif any(not is_trusted_source_domain(article.source_domain) for article in ordered):
+        status = "NEEDS_REVIEW"
+        reasons.append("An uncurated publisher is present in the event cluster; inspect its claim against the trusted source")
+    elif not any(a.description for a in ordered):
         status = "NEEDS_REVIEW"
     elif reasons:
         status = "NEEDS_REVIEW"
     else:
         status = "APPROVED"
-        reasons.append("At least two distinct source groups reported the event; automated checks found no review flags")
+        independent = len({item.independence for item in evidence})
+        reasons.append(
+            "Curated source and automated consistency checks passed; report is not independently corroborated"
+            if independent < 2
+            else "At least two distinct source groups reported the event; automated checks found no review flags"
+        )
     score, parts = trend_score(ordered, now=clock)
     source_names = list(dict.fromkeys(a.publisher for a in ordered))
     # A publication date is not automatically the date an event happened.
@@ -267,4 +294,3 @@ def build_story(articles: list[Article], batch_id: str, now: datetime | None = N
         credibility_score=credibility,
         retrieved_at=max(a.retrieved_at for a in ordered),
     )
-

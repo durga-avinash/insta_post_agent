@@ -12,7 +12,7 @@ from insta_post_agent.caption import make_caption
 from insta_post_agent.history import NewsHistory
 from insta_post_agent.models import TrendSignal
 from insta_post_agent.pipeline import run_daily
-from insta_post_agent.pipeline import _best_unused_trend_evidence, _eligible_review_draft
+from insta_post_agent.pipeline import _best_unused_trend_evidence, _eligible_editorial_backup, _eligible_review_draft
 from insta_post_agent.render import _logo_at_size, render_slide
 from insta_post_agent.verification import deterministic_key_takeaways, deterministic_summary
 from insta_post_agent.verification import build_story
@@ -115,6 +115,7 @@ def test_template_renderer_uses_all_three_layouts_and_required_original_logos(tm
 
 def test_source_authored_summary_merges_distinct_reports_without_inventing_copy():
     story = fixture_story("FIXTURE ONLY: Central bank publishes a policy note on market liquidity", "INDIA", "merge-summary")
+    story.articles[1].description += " A separate detail says the fictional review will consider two synthetic indicators."
 
     summary = deterministic_summary(story.articles)
     takeaways = deterministic_key_takeaways(story.articles)
@@ -123,6 +124,7 @@ def test_source_authored_summary_merges_distinct_reports_without_inventing_copy(
     assert "separate imaginary desk" in summary
     assert takeaways
     assert all(item in " ".join(article.description for article in story.articles) for item in takeaways)
+    assert all(item not in summary for item in takeaways)
 
 
 def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monkeypatch):
@@ -208,7 +210,7 @@ def test_pipeline_completes_with_only_the_high_trend_stories_available(tmp_path,
         assert "verification_manifest.json" in names
 
 
-def test_current_trusted_single_source_becomes_marked_review_draft(tmp_path, monkeypatch):
+def test_current_trusted_single_source_can_enter_the_editor_queue_without_duplicate_fact_check(tmp_path, monkeypatch):
     report = article(
         "FIXTURE ONLY: Indian city opens transit station after repairs",
         "https://www.bbc.com/news/fixture-transit-station",
@@ -243,24 +245,27 @@ def test_current_trusted_single_source_becomes_marked_review_draft(tmp_path, mon
     )
     date_dir = tmp_path / "output" / "2026-10-13"
 
-    assert _eligible_review_draft(build_story([report], "fixture-batch", now=NOW)) is True
+    single_source_story = build_story([report], "fixture-batch", now=NOW)
+    assert single_source_story.verification_status == "APPROVED"
+    assert _eligible_review_draft(single_source_story) is False
+    assert _eligible_editorial_backup(single_source_story, NOW) is True
     assert summary["workflow_complete"] is True
-    assert summary["batch_status"] == "REVIEW_DRAFT_AVAILABLE"
-    assert summary["trend_selection_mode"] == "TRENDS_MATCHED_REVIEW_DRAFT"
+    assert summary["batch_status"] == "READY_FOR_REVIEW"
+    assert summary["trend_selection_mode"] == "GOOGLE_TRENDS_MATCHED"
     assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
-    assert summary["stories_selected_needs_review"] == 1
-    assert summary["publication_ready"] is False
+    assert summary["stories_selected_needs_review"] == 0
+    assert summary["publication_ready"] is True
     assert summary["images_generated"] == 1
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
         names = set(archive.namelist())
         assert "slide_01_india.png" in names
         assert "verification_manifest.json" in names
     caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
-    assert "Review draft" in caption
-    assert "NEEDS_REVIEW" in caption
+    assert "Today's news" in caption
+    assert "NEEDS_REVIEW" not in caption
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["selected_stories"][0]["verification_status"] == "NEEDS_REVIEW"
-    assert "editor draft" in manifest["selected_stories"][0]["selection_reason"]
+    assert manifest["selected_stories"][0]["verification_status"] == "APPROVED"
+    assert "same-region Google Trends" in manifest["selected_stories"][0]["selection_reason"]
 
 
 def test_review_drafts_exclude_unknown_publishers_but_keep_sensitive_items_flagged():
@@ -392,6 +397,41 @@ def test_trusted_business_reports_without_a_trend_match_create_labeled_editorial
     assert "do not describe backup stories as google-trends-confirmed" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8").lower()
     with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
         assert "slide_01_india.png" in archive.namelist()
+
+
+def test_three_independent_trusted_publishers_are_audited_as_coverage_trend_fallback(tmp_path, monkeypatch):
+    title = "FIXTURE ONLY: Central bank holds interest rate after inflation review"
+    story = fixture_story(title, "INDIA", "coverage-pulse")
+    third = article(
+        title,
+        "https://apnews.com/fixture/coverage-pulse",
+        "apnews.com",
+        description="A separate fixture report says the central bank decision shapes synthetic business lending conditions.",
+        region="INDIA",
+        published_at=NOW - timedelta(minutes=7),
+        source_id="ap-coverage-fixture",
+    )
+    raw_articles = [*story.articles, third]
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: (raw_articles, [{"source_id": "fixture", "status": "OK", "items": "3"}]),
+    )
+
+    summary = run_daily(
+        root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW, sources=[], trend_signals=[],
+    )
+
+    manifest = json.loads((tmp_path / "output" / "2026-10-13" / "verification_manifest.json").read_text(encoding="utf-8"))
+    selected = manifest["selected_stories"][0]
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["cross_publisher_coverage_signals_by_region"]["INDIA"] == 1
+    assert selected["selection_basis"] == "CROSS_PUBLISHER_COVERAGE"
+    assert selected["trend_status"] == "CONFIRMED_CROSS_PUBLISHER_COVERAGE"
+    signal = selected["trend_evidence"][0]
+    assert signal["independent_publisher_count"] == 3
+    assert len(signal["evidence_urls"]) == 3
+    assert "search-volume or social-media metric" in selected["selection_reason"]
 
 
 def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(tmp_path, monkeypatch):
@@ -529,4 +569,3 @@ def test_trend_topic_diversity_uses_next_unused_topic():
 
     assert first["query"] == "Man Utd"
     assert second["query"] == "Championship"
-
