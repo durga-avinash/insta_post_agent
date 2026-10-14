@@ -10,7 +10,7 @@ def make_caption(stories: list[Story], *, max_chars: int = 2200) -> str:
     confirmed_statuses = {"CONFIRMED_GOOGLE_TRENDS", "CONFIRMED_CROSS_PUBLISHER_COVERAGE"}
     has_unconfirmed_trend = any(story.trend_status not in confirmed_statuses for story in stories)
     if has_coverage_signal:
-        intro = "Trend signals use Google Trends where available and/or coverage by at least three independent trusted publishers in 24 hours. Publisher pickup is a coverage proxy, not a search-volume or social-media count."
+        intro = "Google Trends is used when available. The fallback flags pickup by at least two independent trusted publishers in 24 hours; that is not a search-volume or social-media count."
         if has_editorial_backup:
             intro += " Editor-backup items below do not meet either trend signal."
         closing = "Review the linked originals and any review flags; approve and publish manually."
