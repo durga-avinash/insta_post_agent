@@ -37,7 +37,7 @@ IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 MAX_STORIES_PER_REGION = 3
 MAX_SLIDES = 6
 DEFAULT_MIN_TREND_SEARCHES = 10_000
-MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL = 3
+MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL = 2
 CONFIRMED_TREND_STATUSES = frozenset({"CONFIRMED_GOOGLE_TRENDS", "CONFIRMED_CROSS_PUBLISHER_COVERAGE"})
 
 
@@ -135,9 +135,10 @@ def _coverage_profile(story: Story) -> tuple[int, int]:
 def _cross_publisher_coverage_signal(story: Story, now: datetime) -> dict[str, object] | None:
     """Return a cited coverage signal from recent curated reports, never a search count.
 
-    Three distinct trusted outlets in the latest 24 hours can substitute for an
-    unavailable/off-topic Google Trends match. Known wire copies and identical
-    descriptions collapse into one source group, so syndication cannot inflate it.
+    Two distinct trusted outlets in the latest 24 hours can provide a
+    publisher-pickup fallback when Google Trends is unavailable or off-topic.
+    This is weaker evidence than measured search interest, not proof of virality.
+    Known wire copies and identical descriptions collapse into one source group.
     """
     cutoff = now.astimezone(timezone.utc) - timedelta(hours=24)
     reports = [
@@ -166,7 +167,7 @@ def _cross_publisher_coverage_signal(story: Story, now: datetime) -> dict[str, o
         "independent_publisher_count": len(independent_groups),
         "publisher_domains": publishers,
         "evidence_urls": evidence_urls,
-        "interpretation": "High cross-publisher coverage proxy; not a search-volume or social-media measurement",
+        "interpretation": "Independent publisher-pickup proxy; not a search-volume or social-media measurement",
     }
 
 
@@ -656,7 +657,7 @@ def run_daily(
                 story.trend_status = "UNCONFIRMED"
                 story.trend_evidence = []
                 story.verification_reasons.append(
-                    "No Google Trends match or three-source coverage signal was available; included as a clearly labeled editor draft, not as trending news"
+                    f"No Google Trends match or {MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL}-publisher coverage signal was available; included as a clearly labeled editor draft, not as trending news"
                 )
                 selected.append(story)
                 selected_event_keys.append((key, signature))
@@ -684,7 +685,7 @@ def run_daily(
             warnings.append(
                 f"{region}: {kept} slide(s) selected from {len(regional_clusters)} fresh clusters; "
                 f"{len(recent_stories)} passed the recent trusted-source MBA filter, {len(confirmed)} matched Google Trends, "
-                f"{len(coverage_candidates)} had three-source coverage, and {fallback_by_region[region]} were editorial backups. "
+                f"{len(coverage_candidates)} met the independent-publisher coverage threshold, and {fallback_by_region[region]} were editorial backups. "
                 "The three-slide regional limit is a maximum, not a target."
             )
     date_dir = output_root / local_date
@@ -752,7 +753,7 @@ def run_daily(
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches, then stories reported by at least three independent trusted publishers within 24 hours (including targeted Google News RSS coverage searches); fill remaining slots with clearly labeled current trusted-source editor drafts; never exceed three stories per region",
+            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches, then stories reported by at least two independent trusted publishers within 24 hours (including targeted Google News RSS coverage searches); fill remaining slots with clearly labeled current trusted-source editor drafts; never exceed three stories per region",
             "trend_score_note": "Google Trends uses its approximate traffic buckets. The alternate coverage proxy counts independent trusted publisher groups in the latest 24 hours; neither signal is a truth score, social-media count, or exact popularity measurement.",
         },
         "selected_stories": [
@@ -765,7 +766,7 @@ def run_daily(
                 "selection_basis": story.selection_basis,
                 "trend_evidence": story.trend_evidence,
                 "selection_reason": (
-                    "No Google Trends match or three-source coverage signal was available. Selected from fresh trusted-source MBA reporting as an editor draft; it is not represented as trending."
+                    f"No Google Trends match or {MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL}-publisher coverage signal was available. Selected from fresh trusted-source MBA reporting as an editor draft; it is not represented as trending."
                     if story.selection_basis == "EDITORIAL_BACKUP" else
                     f"At least {MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL} independent trusted publishers covered this fresh story within 24 hours. This is a coverage-based trend proxy, not a search-volume or social-media metric."
                     if story.selection_basis == "CROSS_PUBLISHER_COVERAGE" else
@@ -783,8 +784,8 @@ def run_daily(
             "The publication timestamp is not presented as an event date; event date stays blank unless explicitly supplied by a later verified source.",
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
             "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
-            "Targeted coverage fallback checks at most six leading MBA-relevant headlines per region (configurable) with a 48-hour Google News RSS query and counts only event-matched, dated, trusted publishers distinct from the original report domains.",
-            "A trend signal can come from a fresh same-region Google Trends match or coverage by at least three independent trusted publisher groups within 24 hours. The latter is a publisher-coverage proxy, not search or social-media volume.",
+            "Targeted coverage fallback checks a bounded set of leading MBA-relevant headlines per region (12 by default, configurable) with a 48-hour Google News RSS query and counts only event-matched, dated, trusted publishers distinct from the original report domains.",
+            "A measured trend signal can come from a fresh same-region Google Trends match. When that is unavailable or off-topic, reports from at least two independent trusted publisher groups within 24 hours may qualify for a clearly labeled publisher-pickup fallback. This does not establish high search interest, social reach, or virality.",
             "When neither trend signal qualifies, fresh trusted-source MBA reports may fill available slots as EDITORIAL_BACKUP drafts; they are explicitly not described as trending.",
             "A NEEDS_REVIEW slide is an editor draft, not a truth certification or publication approval. It may carry unresolved date, conflict, sensitivity, or corroboration flags; open the source pages and resolve those flags before use.",
             "A single curated trusted report can enter the manual editorial queue without requiring a second publisher's repetition. APPROVED means it passed source and automated consistency checks, not that it was independently corroborated or publication-approved.",
