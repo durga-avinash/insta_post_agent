@@ -8,7 +8,7 @@ from insta_post_agent.collector import feed_error_detail, make_session
 from insta_post_agent.classify import classify_category, classify_region, is_mba_relevant
 from insta_post_agent.models import Article, FeedSource
 from insta_post_agent.normalize import canonicalize_url, normalize_timestamp
-from insta_post_agent.scoring import cluster_articles, deduplicate_articles, trend_score
+from insta_post_agent.scoring import cluster_articles, deduplicate_articles, titles_describe_same_event, trend_score
 from insta_post_agent.sources import load_sources
 
 NOW = datetime(2026, 10, 13, 3, 30, tzinfo=timezone.utc)
@@ -68,6 +68,26 @@ def test_url_deduplication_and_story_clustering():
     assert len(deduplicate_articles([a, duplicate])) == 1
     clusters = cluster_articles([a, corroboration, unrelated])
     assert sorted(len(cluster) for cluster in clusters) == [1, 2]
+
+
+def test_indian_court_abbreviation_and_full_name_cluster_as_same_event():
+    abbreviated = article(
+        "Delhi HC seeks replies on plea against non-dairy products sold as paneer",
+        "https://business-standard.com/fixture/paneer-case",
+        "business-standard.com",
+        region="INDIA",
+    )
+    expanded = article(
+        "Delhi High Court seeks FSSAI stand on PIL against non-dairy analogous paneer",
+        "https://news.example.test/fixture/paneer-case",
+        "news.example.test",
+        region="INDIA",
+    )
+
+    assert titles_describe_same_event(abbreviated.title, expanded.title) is True
+    clusters = cluster_articles([abbreviated, expanded])
+    assert len(clusters) == 1
+    assert len(clusters[0]) == 2
 
 
 def test_region_category_and_transparent_trend_components():
