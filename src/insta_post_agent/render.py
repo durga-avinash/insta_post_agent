@@ -179,7 +179,10 @@ def _draw_brand_header(draw: ImageDraw.ImageDraw, slide_number: int, total: int,
     region_category = f"{story.region}  /  {category}"
     label_font = _fit_lines(draw, region_category, max_width=465, max_lines=1, max_size=22, min_size=14, bold=True)[0]
     draw.text((123, 395), region_category, font=label_font, fill=NAVY)
-    if story.trend_status == "CONFIRMED_GOOGLE_TRENDS" and story.trend_evidence:
+    if story.selection_basis == "EDITORIAL_BACKUP":
+        trend_label = "EDITOR BACKUP"
+        trend_fill, trend_ink = "#F5E4B4", "#765410"
+    elif story.trend_status == "CONFIRMED_GOOGLE_TRENDS" and story.trend_evidence:
         traffic = str(story.trend_evidence[0].get("approx_traffic") or "TREND MATCHED")
         trend_label = f"TRENDS  {traffic}"
         trend_fill, trend_ink = "#D6E8D6", "#234E35"

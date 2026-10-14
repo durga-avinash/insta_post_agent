@@ -358,7 +358,7 @@ def test_untrusted_no_trend_items_do_not_enter_the_carousel(tmp_path, monkeypatc
     assert "No carousel slides were generated" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
 
 
-def test_trusted_business_reports_without_a_trend_match_stay_in_report_not_carousel(tmp_path, monkeypatch):
+def test_trusted_business_reports_without_a_trend_match_create_labeled_editorial_backup(tmp_path, monkeypatch):
     story = fixture_story(
         "FIXTURE ONLY: Central bank holds interest rate after inflation review",
         "INDIA",
@@ -380,14 +380,18 @@ def test_trusted_business_reports_without_a_trend_match_stay_in_report_not_carou
     date_dir = tmp_path / "output" / "2026-10-13"
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
 
-    assert summary["images_generated"] == 0
-    assert summary["selected_by_region"] == {"INDIA": 0, "WORLD": 0}
-    assert summary["trend_selection_mode"] == "NO_QUALIFYING_TREND_STORIES"
-    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
+    assert summary["images_generated"] == 1
+    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["trend_selection_mode"] == "EDITORIAL_BACKUP_NO_TREND"
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 1, "WORLD": 0}
     assert summary["publication_ready"] is False
-    assert manifest["selected_stories"] == []
+    assert manifest["selected_stories"][0]["selection_basis"] == "EDITORIAL_BACKUP"
+    assert manifest["selected_stories"][0]["trend_status"] == "UNCONFIRMED"
+    assert manifest["selected_stories"][0]["human_review_required"] is True
     assert summary["distinct_story_clusters"] == 1
-    assert "no carousel slides" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8").lower()
+    assert "do not describe backup stories as google-trends-confirmed" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8").lower()
+    with zipfile.ZipFile(date_dir / "content_package.zip") as archive:
+        assert "slide_01_india.png" in archive.namelist()
 
 
 def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(tmp_path, monkeypatch):
@@ -418,7 +422,12 @@ def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(
 
     assert summary["minimum_google_trends_searches"] == 10_000
     assert summary["matched_trends_by_region"] == {"INDIA": 0, "WORLD": 0}
-    assert summary["images_generated"] == 0
+    assert summary["images_generated"] == 1
+    assert summary["trend_selection_mode"] == "EDITORIAL_BACKUP_NO_TREND"
+    assert summary["publication_ready"] is False
+    date_dir = tmp_path / "output" / "2026-10-13"
+    manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["selected_stories"][0]["selection_basis"] == "EDITORIAL_BACKUP"
 
 
 def test_trend_volume_threshold_must_be_positive(tmp_path):

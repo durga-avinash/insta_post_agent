@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 from .models import Story
 
 HEADERS = {
-    "News_Master": ["News ID", "Batch ID", "Region", "Headline", "Summary", "Category", "Event date", "Publisher", "Original URL", "Corroborating source URLs", "Trend score", "Trend status", "Google Trends evidence", "Score components", "Verification status", "Verification reasons", "Image path", "Caption", "Retrieval timestamp"],
+    "News_Master": ["News ID", "Batch ID", "Region", "Headline", "Summary", "Category", "Event date", "Publisher", "Original URL", "Corroborating source URLs", "Trend score", "Trend status", "Selection basis", "Google Trends evidence", "Score components", "Verification status", "Verification reasons", "Image path", "Caption", "Retrieval timestamp"],
     "Verification_Log": ["News ID", "Evidence URL", "Publisher", "Source independence assessment", "Claims checked", "Conflicts or uncertainty", "Decision", "Reason", "Verification timestamp"],
     "Publishing_Queue": ["Batch ID", "Target date", "Slide number", "News ID", "Image path", "Caption", "Freshness status", "Editorial approval status", "Manual publication status"],
 }
@@ -32,7 +32,7 @@ def create_workbook(path: Path, stories: list[Story], selected: list[Story], bat
             sheet.append([
                 story.news_id, story.batch_id, story.region, story.headline, story.summary, story.category,
                 story.event_date, story.publisher, story.original_url, "\n".join(story.corroborating_urls),
-                story.trend_score, story.trend_status, json.dumps(story.trend_evidence, ensure_ascii=False),
+                story.trend_score, story.trend_status, story.selection_basis, json.dumps(story.trend_evidence, ensure_ascii=False),
                 json.dumps(story.score_components, sort_keys=True), story.verification_status,
                 "; ".join(story.verification_reasons), story.image_path, story.caption, story.retrieved_at.isoformat(),
             ])
@@ -48,7 +48,9 @@ def create_workbook(path: Path, stories: list[Story], selected: list[Story], bat
             for slide_no, story in enumerate(selected, start=1):
                 sheet.append([
                     batch_id, target_date, slide_no, story.news_id, story.image_path, story.caption,
-                    story.freshness_status, story.verification_status, "NOT_PUBLISHED",
+                    story.freshness_status,
+                    "NEEDS_REVIEW" if story.selection_basis == "EDITORIAL_BACKUP" or story.verification_status == "NEEDS_REVIEW" else story.verification_status,
+                    "NOT_PUBLISHED",
                 ])
         _format_sheet(sheet)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,7 @@ def _format_sheet(sheet) -> None:
         cell.fill = PatternFill("solid", fgColor=navy)
         cell.alignment = Alignment(vertical="center", wrap_text=True)
     sheet.row_dimensions[1].height = 34
-    widths = [18, 14, 12, 48, 60, 22, 15, 28, 58, 58, 14, 24, 58, 34, 20, 62, 40, 55, 26]
+    widths = [18, 14, 12, 48, 60, 22, 15, 28, 58, 58, 14, 24, 24, 58, 34, 20, 62, 40, 55, 26]
     for idx, width in enumerate(widths[: sheet.max_column], start=1):
         sheet.column_dimensions[get_column_letter(idx)].width = width
     thin = Side(style="hair", color="D9E1E8")
@@ -90,3 +92,4 @@ def validate_workbook(path: Path) -> bool:
         return True
     finally:
         wb.close()
+

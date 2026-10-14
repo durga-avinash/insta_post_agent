@@ -10,7 +10,7 @@ A free, review-first daily news carousel generator for DMS IIT Delhi's MBA audie
 - Publisher reports are deduplicated by canonical URL and grouped by event. Google News results for a specific trend can join independently worded reports; wire copies and identical descriptions do not count as independent corroboration.
 - One source-merged editorial record, one evidence log, and one deterministic source-extractive summary per event. The app does not launch a second article crawl to repeat checks already supported by the collected reports.
 - Automated approval only when at least two independent curated trusted publishers or primary sources support the item and the automated consistency checks find no review flags. Current trusted stories with a date, conflict, sensitivity, or corroboration flag remain visible as `NEEDS_REVIEW` drafts so the editor can inspect them; they are not publication-approved.
-- Slides are created only for fresh same-region Google Trends matches at or above the high-volume threshold, and only for MBA-relevant topics. If the day has no qualifying story, the daily workbook, evidence report, caption status and ZIP are still produced, but the package contains no carousel slides. It never fills a slot with a non-trending fallback.
+- Fresh same-region Google Trends matches at or above the high-volume threshold are preferred, and only MBA-relevant topics can enter the carousel. If a region has no qualifying trend match, the workflow may create up to three `EDITORIAL BACKUP` slides from current trusted reporting for that region. These are explicitly marked `TREND UNCONFIRMED`, require human review, and must not be described as trending. Unsupported, stale, untrusted and off-topic items still do not enter slides.
 - No LLM API is required. Headlines, summaries, takeaways, source checks, artwork, workbook, and package are produced deterministically from collected source material. The optional editor helper is not enabled in the daily workflow.
 
 ## Editorial slide design
@@ -64,5 +64,5 @@ The action restores/saves a small SQLite recent-story file through GitHub Action
 
 ## Tests
 
-Automated tests use synthetic, labelled fixtures and mock network/model responses. They cover feed parsing and retries, dates and canonical URLs, clustering and syndicated-copy checks, trend matching and no-fallback gating, MBA relevance, review gating, extractive summaries, required logo assets and the three template layouts, overflow, workbook structure, variable slide counts, repeat-batch handling, caption links, and ZIP completeness. They run without API keys or live news.
+Automated tests use synthetic, labelled fixtures and mock network/model responses. They cover feed parsing and retries, dates and canonical URLs, clustering and syndicated-copy checks, trend matching and labeled editorial-backup gating, MBA relevance, review gating, extractive summaries, required logo assets and the three template layouts, overflow, workbook structure, variable slide counts, repeat-batch handling, caption links, and ZIP completeness. They run without API keys or live news.
 

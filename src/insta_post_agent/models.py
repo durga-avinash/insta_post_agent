@@ -100,6 +100,7 @@ class Story:
     freshness_status: str = "FRESH"
     trend_status: str = "UNCONFIRMED"
     trend_evidence: list[dict[str, Any]] = field(default_factory=list)
+    selection_basis: str = "UNSELECTED"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,4 +127,6 @@ class Story:
             "freshness_status": self.freshness_status,
             "trend_status": self.trend_status,
             "trend_evidence": self.trend_evidence,
+            "selection_basis": self.selection_basis,
         }
+
