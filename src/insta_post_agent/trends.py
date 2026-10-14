@@ -150,7 +150,10 @@ def collect_trend_news_articles(
     client = session or make_session()
     clock = retrieved_at or datetime.now(timezone.utc)
     locale = {
-        "IN": ("INDIA", "en-IN", "IN", "IN:en"),
+        # Google News' geo parameter describes where the search is made, not
+        # where the reported event happened. Start as WORLD; classify an item
+        # as India only when its own title/description carries an India signal.
+        "IN": ("WORLD", "en-IN", "IN", "IN:en"),
         "US": ("WORLD", "en-US", "US", "US:en"),
         "GB": ("WORLD", "en-GB", "GB", "GB:en"),
     }
@@ -211,7 +214,7 @@ def collect_candidate_coverage(
     stories: list[Story],
     *,
     now: datetime,
-    max_queries_per_region: int = 6,
+    max_queries_per_region: int = 12,
     max_items_per_query: int = 15,
     session: requests.Session | None = None,
     min_delay_seconds: float = 0.25,
