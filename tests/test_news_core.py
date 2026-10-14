@@ -5,7 +5,7 @@ from pathlib import Path
 
 from insta_post_agent.collector import parse_feed_content
 from insta_post_agent.collector import feed_error_detail, make_session
-from insta_post_agent.classify import classify_category, classify_region
+from insta_post_agent.classify import classify_category, classify_region, is_mba_relevant
 from insta_post_agent.models import Article, FeedSource
 from insta_post_agent.normalize import canonicalize_url, normalize_timestamp
 from insta_post_agent.scoring import cluster_articles, deduplicate_articles, trend_score
@@ -60,6 +60,15 @@ def test_region_category_and_transparent_trend_components():
     assert score == sum(components.values())
     assert components["independent_coverage_proxy"] == 20
     assert components["search_interest"] == 0
+
+
+def test_mba_relevance_uses_headline_topic_and_rejects_general_interest_false_positives():
+    assert is_mba_relevant("RBI holds rates as inflation cools", "Central bank policy update")
+    assert is_mba_relevant("New vaccine trial advances to phase three", "Healthcare research update")
+    assert not is_mba_relevant("Fresh summons in a YouTuber defamation case", "A court issued another summons")
+    assert not is_mba_relevant("Rapper injured in prison fight and taken to hospital", "A hospital admitted a public figure")
+    assert not is_mba_relevant("Cricket live score: India vs West Indies", "Trade talks continue before the match")
+    assert not is_mba_relevant("Football transfer talks continue", "The team is discussing a trade")
 
 
 def test_feed_retry_policy_and_source_registry_load():

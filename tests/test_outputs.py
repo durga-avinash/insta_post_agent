@@ -132,7 +132,7 @@ def test_full_fixture_pipeline_writes_six_slides_and_complete_zip(tmp_path, monk
         ("INDIA", "FIXTURE ONLY: Ladakh solar researchers start new training centre", "solar-training"),
         ("WORLD", "FIXTURE ONLY: Coastal cities publish a flood readiness map", "coastal-flood-map"),
         ("WORLD", "FIXTURE ONLY: Island schools study renewable energy methods", "island-energy"),
-        ("WORLD", "FIXTURE ONLY: Ocean students chart coral reef research findings", "reef-research"),
+        ("WORLD", "FIXTURE ONLY: Ocean renewable-energy firms fund coral reef monitoring", "reef-research"),
     ]
     expected_now = NOW
     records = [fixture_story(title, region, slug, now=expected_now) for region, title, slug in titles]
@@ -291,8 +291,8 @@ def test_pipeline_never_selects_more_than_three_per_region(tmp_path, monkeypatch
         ("INDIA", "FIXTURE ONLY: Bengaluru libraries digitize Kannada manuscripts", "bengaluru-library"),
         ("WORLD", "FIXTURE ONLY: Arctic observatories chart seasonal ice retreat", "arctic-ice"),
         ("WORLD", "FIXTURE ONLY: Pacific islands restore native mangrove forests", "pacific-mangroves"),
-        ("WORLD", "FIXTURE ONLY: European laboratories map rare protein structure", "european-protein"),
-        ("WORLD", "FIXTURE ONLY: African cities extend cross-border rail service", "african-rail"),
+        ("WORLD", "FIXTURE ONLY: European biotech labs map a rare protein structure", "european-protein"),
+        ("WORLD", "FIXTURE ONLY: African cities extend cross-border railway service", "african-rail"),
     ]
     records = [fixture_story(title, region, slug, now=NOW) for region, title, slug in titles]
     raw_articles = [article for story in records for article in story.articles]
@@ -342,8 +342,8 @@ def test_untrusted_no_trend_items_do_not_enter_the_carousel(tmp_path, monkeypatc
     date_dir = tmp_path / "output" / "2026-10-13"
 
     assert summary["workflow_complete"] is True
-    assert summary["batch_status"] == "NO_PUBLISHABLE_STORIES"
-    assert summary["trend_selection_mode"] == "NO_ELIGIBLE_CONTENT"
+    assert summary["batch_status"] == "NO_QUALIFYING_TREND_STORIES"
+    assert summary["trend_selection_mode"] == "NO_QUALIFYING_TREND_STORIES"
     assert summary["images_generated"] == 0
     assert summary["selected_by_region"] == {"INDIA": 0, "WORLD": 0}
     assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
@@ -355,10 +355,10 @@ def test_untrusted_no_trend_items_do_not_enter_the_carousel(tmp_path, monkeypatc
         assert "carousel_caption.txt" in names
         assert "verification_manifest.json" in names
         assert sum(name.endswith(".png") for name in names) == 0
-    assert "No current MBA-relevant item from a curated trusted source" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+    assert "No carousel slides were generated" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
 
 
-def test_current_trusted_business_reports_produce_unconfirmed_fallback_when_trends_are_missing(tmp_path, monkeypatch):
+def test_trusted_business_reports_without_a_trend_match_stay_in_report_not_carousel(tmp_path, monkeypatch):
     story = fixture_story(
         "FIXTURE ONLY: Central bank holds interest rate after inflation review",
         "INDIA",
@@ -380,13 +380,45 @@ def test_current_trusted_business_reports_produce_unconfirmed_fallback_when_tren
     date_dir = tmp_path / "output" / "2026-10-13"
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
 
-    assert summary["images_generated"] == 1
-    assert summary["selected_by_region"] == {"INDIA": 1, "WORLD": 0}
-    assert summary["trend_selection_mode"] == "EDITORIAL_FALLBACK_NEEDS_TREND_REVIEW"
-    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 1, "WORLD": 0}
+    assert summary["images_generated"] == 0
+    assert summary["selected_by_region"] == {"INDIA": 0, "WORLD": 0}
+    assert summary["trend_selection_mode"] == "NO_QUALIFYING_TREND_STORIES"
+    assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
     assert summary["publication_ready"] is False
-    assert manifest["selected_stories"][0]["trend_status"] == "NOT_CONFIRMED_FALLBACK"
-    assert "TREND UNCONFIRMED" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
+    assert manifest["selected_stories"] == []
+    assert summary["distinct_story_clusters"] == 1
+    assert "no carousel slides" in (date_dir / "carousel_caption.txt").read_text(encoding="utf-8").lower()
+
+
+def test_below_threshold_google_trends_signal_does_not_qualify_as_high_trending(tmp_path, monkeypatch):
+    story = fixture_story(
+        "FIXTURE ONLY: RBI holds interest rates as inflation eases",
+        "INDIA",
+        "low-trend-rbi",
+    )
+    monkeypatch.setattr(
+        "insta_post_agent.pipeline.collect_sources",
+        lambda *args, **kwargs: (story.articles, [{"source_id": "fixture", "status": "OK", "items": "2"}]),
+    )
+    low_signal = TrendSignal(
+        geo="IN",
+        region="INDIA",
+        query=story.headline,
+        approx_traffic="5K+",
+        approximate_searches=5_000,
+        started_at=NOW - timedelta(minutes=5),
+        url="https://trends.google.com/trends/explore?q=fixture",
+        news_items=[],
+    )
+
+    summary = run_daily(
+        root=Path.cwd(), output_root=tmp_path / "output", history_path=tmp_path / "state" / "history.sqlite3",
+        now=NOW, sources=[], trend_signals=[low_signal],
+    )
+
+    assert summary["minimum_google_trends_searches"] == 10_000
+    assert summary["matched_trends_by_region"] == {"INDIA": 0, "WORLD": 0}
+    assert summary["images_generated"] == 0
 
 
 def test_trend_volume_threshold_must_be_positive(tmp_path):
@@ -451,7 +483,7 @@ def test_pipeline_keeps_unverified_untrended_stories_out_of_carousel(tmp_path, m
     assert summary["stories_selected_needs_review"] == 0
     assert summary["human_review_required"] is False
     assert summary["publication_ready"] is False
-    assert summary["trend_selection_mode"] == "NO_ELIGIBLE_CONTENT"
+    assert summary["trend_selection_mode"] == "NO_QUALIFYING_TREND_STORIES"
     assert summary["unconfirmed_fallbacks_by_region"] == {"INDIA": 0, "WORLD": 0}
     assert summary["excel_validated"] is True
     assert sum(1 for image in date_dir.glob("slide_*.png")) == 0
@@ -462,7 +494,7 @@ def test_pipeline_keeps_unverified_untrended_stories_out_of_carousel(tmp_path, m
         assert "verification_manifest.json" in names
         assert sum(name.endswith(".png") for name in names) == 0
     caption = (date_dir / "carousel_caption.txt").read_text(encoding="utf-8")
-    assert "No current MBA-relevant item from a curated trusted source" in caption
+    assert "No carousel slides were generated" in caption
     manifest = json.loads((date_dir / "verification_manifest.json").read_text(encoding="utf-8"))
     assert manifest["selected_stories"] == []
 

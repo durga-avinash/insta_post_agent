@@ -135,6 +135,7 @@ def collect_trend_signals(
 def collect_trend_news_articles(
     signals: list[TrendSignal],
     *,
+    min_searches: int = 10_000,
     max_queries_per_geo: int = 10,
     max_items_per_query: int = 20,
     session: requests.Session | None = None,
@@ -154,10 +155,9 @@ def collect_trend_news_articles(
     selected: list[TrendSignal] = []
     by_geo: dict[str, list[TrendSignal]] = {}
     for signal in signals:
-        # Search current RSS trend topics before applying the stricter publication
-        # floor. Otherwise valid rising topics below an arbitrary count threshold
-        # never reach the news search and cannot be evaluated for an article match.
-        if signal.approximate_searches is None or signal.approximate_searches < 1 or signal.started_at is None:
+        # Avoid spending requests on low-volume topics which cannot qualify for a
+        # slide under the same threshold used by the editorial trend gate.
+        if signal.approximate_searches is None or signal.approximate_searches < min_searches or signal.started_at is None:
             continue
         if signal.geo not in locale:
             continue

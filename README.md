@@ -6,11 +6,11 @@ A free, review-first daily news carousel generator for DMS IIT Delhi's MBA audie
 
 - Up to three India stories and up to three international stories. The slide count changes with the evidence available; six is a ceiling, not a requirement.
 - Current high-interest topics matched against real Google Trends traffic buckets for the same region. The bucket is an approximate lower bound, not an exact query count.
-- MBA-focused categories: business and markets, economy and policy, geopolitics and security, healthcare, technology and industry, climate and energy, and infrastructure and supply chains. General entertainment and sports stories do not enter the slide queue unless their source text also contains a matching management or industry topic.
+- MBA-focused categories: business and markets, economy and policy, geopolitics and security, healthcare, technology and industry, climate and energy, and infrastructure and supply chains. General entertainment and sports stories are excluded unless the headline has an explicit, substantive business or industry angle.
 - Publisher reports are deduplicated by canonical URL and grouped by event. Google News results for a specific trend can join independently worded reports; wire copies and identical descriptions do not count as independent corroboration.
 - One source-merged editorial record, one evidence log, and one deterministic source-extractive summary per event. The app does not launch a second article crawl to repeat checks already supported by the collected reports.
 - Automated approval only when at least two independent curated trusted publishers or primary sources support the item and the automated consistency checks find no review flags. Current trusted stories with a date, conflict, sensitivity, or corroboration flag remain visible as `NEEDS_REVIEW` drafts so the editor can inspect them; they are not publication-approved.
-- If a region has no direct Google Trends match, the workflow can still create a current trusted-source editorial fallback. The slide and caption say `TREND UNCONFIRMED`; it must not be described as trending. Unknown-source, missing-evidence, promotional, and stale items stay out.
+- Slides are created only for fresh same-region Google Trends matches at or above the high-volume threshold, and only for MBA-relevant topics. If the day has no qualifying story, the daily workbook, evidence report, caption status and ZIP are still produced, but the package contains no carousel slides. It never fills a slot with a non-trending fallback.
 - No LLM API is required. Headlines, summaries, takeaways, source checks, artwork, workbook, and package are produced deterministically from collected source material. The optional editor helper is not enabled in the daily workflow.
 
 ## Editorial slide design
@@ -25,7 +25,7 @@ Publisher feeds are configured in [`config/sources.json`](config/sources.json); 
 
 The verification log preserves each retrieved URL, publisher, independence group, headline/description comparison, uncertainty flags, decision, and reason. Unknown publishers can remain visible in the workbook as evidence but cannot make a story automatically approved. A confident model response is never used as fact-check certification.
 
-When Google Trends returns no useful same-region signal, the workflow does not invent a search statistic. It can offer a relevant current trusted-source draft with an explicit unconfirmed status. If no fresh trusted business/policy-relevant source material is available at all, no program can guarantee an accurate post that day; the batch reports the shortfall rather than fabricating a story.
+Google Trends may be dominated by entertainment or sports on a given day, and its public RSS has no MBA-only filter. In that case there may be no qualifying MBA story. The workflow still publishes a daily evidence workbook and status ZIP, but it deliberately produces zero slides rather than calling a merely current article “trending.” This keeps trend claims factual, but it cannot guarantee a publishable carousel every day when no high-interest MBA story is visible in the public trend feed.
 
 ## Output package
 
@@ -46,11 +46,11 @@ python -m insta_post_agent.cli --output-root output --history-path state/news_hi
 
 Required output logos are packaged with the repository. Network access is needed only for the configured public feeds; there are no paid services or required secrets.
 
-Settings in `.env.example` are documented values; the application does not load that file automatically. `NEWS_MIN_TREND_SEARCHES` defaults to `1000` and `NEWS_TREND_QUERIES_PER_GEO` defaults to `20`; the collector checks more of the day's trend topics to find relevant business stories. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to `20`. Raising the minimum trend threshold will reduce the number of trend-confirmed stories.
+Settings in `.env.example` are documented values; the application does not load that file automatically. `NEWS_MIN_TREND_SEARCHES` defaults to `10000` (the approximate lower-bound bucket reported by Google Trends), and `NEWS_TREND_QUERIES_PER_GEO` defaults to `20`. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to `20`. A day dominated by sports or entertainment can legitimately produce fewer than six stories, or none, because unrelated topics are excluded.
 
 ## Daily GitHub Actions schedule
 
-`.github/workflows/daily-news.yml` runs at `03:30 UTC`, which is `09:00 India Standard Time (UTC+05:30)`, and supports manual dispatch. GitHub can delay scheduled jobs. The code checks source freshness and trend freshness, so a delayed or missed run will not quietly relabel stale reporting as today's news.
+`.github/workflows/daily-news.yml` runs at `03:30 UTC`, which is `09:00 India Standard Time (UTC+05:30)`, and supports manual dispatch. Leave `force_rebuild` unchecked for ordinary runs; scheduled runs suppress recently selected events and skip a completed same-day batch. Use it only to deliberately regenerate that day's batch after changing code. GitHub can delay scheduled jobs. The code checks source freshness and trend freshness, so a delayed or missed run will not quietly relabel stale reporting as today's news.
 
 The action restores/saves a small SQLite recent-story file through GitHub Actions cache. Cache is best-effort and can expire; a cache miss is recorded and the current batch continues. Generated content is uploaded as a downloadable artifact retained for 14 days and is not committed to the public repository. Public repository Actions usage is generally free within GitHub's applicable limits; GitHub controls account quotas, artifact storage, cache behavior, and scheduling. No billing integration is enabled. GitHub can disable scheduled runs after a prolonged period without repository activity, so check the Actions page periodically.
 
@@ -59,10 +59,10 @@ The action restores/saves a small SQLite recent-story file through GitHub Action
 1. Open the repository's **Actions** tab and choose **Daily news carousel**.
 2. Open the latest successful run and download `daily-news-<run id>`.
 3. In the ZIP, review `summary.json` and `verification_manifest.json`, then inspect every slide and the workbook's `Verification_Log`.
-4. Open the original reporting linked in the caption or workbook. Resolve every `NEEDS_REVIEW` flag. A `TREND UNCONFIRMED` item is not a trending claim.
+4. Open the original reporting linked in the caption or workbook. Resolve every `NEEDS_REVIEW` flag. Trend evidence and source credibility are separate checks; a trend match is not a truth certification.
 5. Approve and publish manually only after the team has read the sources. There are no Instagram credentials or autoposting features.
 
 ## Tests
 
-Automated tests use synthetic, labelled fixtures and mock network/model responses. They cover feed parsing and retries, dates and canonical URLs, clustering and syndicated-copy checks, trend matching and fallback labels, MBA relevance, review gating, extractive summaries, required logo assets and the three template layouts, overflow, workbook structure, variable slide counts, repeat-batch handling, caption links, and ZIP completeness. They run without API keys or live news.
+Automated tests use synthetic, labelled fixtures and mock network/model responses. They cover feed parsing and retries, dates and canonical URLs, clustering and syndicated-copy checks, trend matching and no-fallback gating, MBA relevance, review gating, extractive summaries, required logo assets and the three template layouts, overflow, workbook structure, variable slide counts, repeat-batch handling, caption links, and ZIP completeness. They run without API keys or live news.
 

@@ -5,6 +5,12 @@ on:
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Rebuild today's batch after code changes; this can repeat recently selected stories"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,8 +27,9 @@ jobs:
       PYTHONPATH: src
       TZ: Asia/Kolkata
       PYTHONUNBUFFERED: "1"
-      # Scheduled/manual workflow attempts always rebuild a batch so retries still create a downloadable package.
-      NEWS_ALLOW_REPEAT_BATCH: "true"
+      # Scheduled runs prevent duplicate batches and suppress stories selected in the prior two days.
+      # Set this only for a deliberate manual same-day rebuild after changing the app.
+      NEWS_ALLOW_REPEAT_BATCH: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
