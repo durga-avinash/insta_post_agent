@@ -26,19 +26,33 @@ def deduplicate_articles(articles: list[Article]) -> list[Article]:
     return result
 
 
+def _comparison_title(title: str) -> str:
+    """Normalize common court abbreviations without widening ordinary matches."""
+    text = normalize_title(title)
+    legal_context = re.search(
+        r"\b(court|plea|petition|judge|bench|ruling|hearing|justice|appeal|verdict|bail|pil)\b",
+        text,
+    )
+    if legal_context:
+        text = re.sub(r"\bhc\b", "high court", text)
+        text = re.sub(r"\bsc\b", "supreme court", text)
+    return text
+
+
 def _tokens(title: str) -> set[str]:
-    return {word for word in normalize_title(title).split() if word not in STOP_WORDS and len(word) > 1}
+    return {word for word in _comparison_title(title).split() if word not in STOP_WORDS and len(word) > 1}
 
 
 def titles_describe_same_event(left: str, right: str) -> bool:
-    if normalize_title(left) == normalize_title(right):
+    normalized_left, normalized_right = _comparison_title(left), _comparison_title(right)
+    if normalized_left == normalized_right:
         return True
     a, b = _tokens(left), _tokens(right)
     if min(len(a), len(b)) < 2:
         return False
     overlap = len(a & b) / len(a | b)
     containment = len(a & b) / min(len(a), len(b))
-    sequence = SequenceMatcher(None, normalize_title(left), normalize_title(right)).ratio()
+    sequence = SequenceMatcher(None, normalized_left, normalized_right).ratio()
     return overlap >= 0.50 or (containment >= 0.78 and sequence >= 0.55)
 
 
