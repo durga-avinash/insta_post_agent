@@ -15,7 +15,7 @@ from .collector import collect_sources
 from .classify import is_mba_relevant, mba_relevance_score
 from .history import NewsHistory
 from .models import Article, Story, TrendSignal
-from .normalize import normalize_title
+from .normalize import normalize_domain, normalize_title
 from .render import render_slide
 from .scoring import cluster_articles, cluster_key, deduplicate_articles
 from .sources import load_sources
@@ -23,6 +23,7 @@ from .verification import build_story, is_trusted_source_domain, source_independ
 from .workbook import create_workbook, validate_workbook
 from .trends import (
     apply_trend_evidence,
+    collect_candidate_coverage,
     collect_trend_news_articles,
     collect_trend_signals,
     fresh_trend_signals,
@@ -121,7 +122,7 @@ def _coverage_profile(story: Story) -> tuple[int, int]:
         if is_trusted_source_domain(article.source_domain)
     }
     domains = {
-        article.source_domain for article in story.articles
+        normalize_domain(article.source_domain) for article in story.articles
         if article.url in trusted_urls
     }
     independent_groups = {
@@ -150,10 +151,10 @@ def _cross_publisher_coverage_signal(story: Story, now: datetime) -> dict[str, o
     groups = source_independence_groups(reports)
     group_to_articles: dict[str, list[Article]] = {}
     for article in reports:
-        group = groups.get(article.canonical_url or article.id, article.source_domain)
+        group = groups.get(article.canonical_url or article.id, normalize_domain(article.source_domain))
         group_to_articles.setdefault(group, []).append(article)
     independent_groups = sorted(group_to_articles)
-    publishers = sorted({article.source_domain for article in reports if article.source_domain})
+    publishers = sorted({normalize_domain(article.source_domain) for article in reports if article.source_domain})
     if len(publishers) < MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL or len(independent_groups) < MIN_INDEPENDENT_PUBLISHERS_FOR_COVERAGE_SIGNAL:
         return None
     evidence_urls = list(dict.fromkeys(
@@ -226,6 +227,8 @@ def _make_summary(
     fresh_trends: int,
     trend_news_articles_collected: int,
     trend_news_feed_status: list[dict[str, str]],
+    candidate_coverage_feed_status: list[dict[str, str]],
+    candidate_coverage_articles_collected: int,
 ) -> dict[str, object]:
     slide_count = len(slide_results)
     selected_by_region = {
@@ -263,6 +266,8 @@ def _make_summary(
         "google_trend_signals_fresh": fresh_trends,
         "trend_news_articles_collected": trend_news_articles_collected,
         "google_trend_news_feed_status": trend_news_feed_status,
+        "targeted_coverage_articles_collected": candidate_coverage_articles_collected,
+        "targeted_coverage_queries": candidate_coverage_feed_status,
         "matched_trends_by_region": matched_by_region,
         "cross_publisher_coverage_signals_by_region": coverage_by_region,
         "unconfirmed_fallbacks_by_region": fallback_by_region,
@@ -402,6 +407,8 @@ def run_daily(
     else:
         # Injected trend fixtures keep unit tests deterministic and network-free.
         trend_news_articles, trend_news_feed_status = [], []
+    candidate_coverage_feed_status: list[dict[str, str]] = []
+    candidate_coverage_articles_collected = 0
     raw_articles.extend(trend_news_articles)
     articles = deduplicate_articles(raw_articles)
     fresh_articles, stale_count, future_count = _fresh_articles(articles, clock, max_age)
@@ -436,6 +443,61 @@ def run_daily(
     for story in candidates:
         apply_trend_evidence(story, match_story_to_trends(story, current_trends, min_searches=min_searches))
     candidates.sort(key=lambda story: story.trend_score, reverse=True)
+
+    # Google Trends can be irrelevant to the MBA audience on a given day. Search
+    # the leading current business/policy stories individually through Google's
+    # public News RSS endpoint and use the publisher pickup only if the result is
+    # a real, recent, trusted, event-matched report. The search count is bounded
+    # and never represented as a popularity or social-media measurement.
+    if trend_signals is None:
+        try:
+            coverage_queries = int(os.getenv("NEWS_COVERAGE_QUERIES_PER_REGION", "6"))
+        except ValueError as exc:
+            raise ValueError("NEWS_COVERAGE_QUERIES_PER_REGION must be a positive whole number") from exc
+        if coverage_queries < 1:
+            raise ValueError("NEWS_COVERAGE_QUERIES_PER_REGION must be a positive whole number")
+        coverage_search_pool = [
+            story for story in candidates
+            if _is_mba_story(story)
+            and _has_recent_report(story, clock)
+            and _eligible_editorial_backup(story, clock)
+        ]
+        coverage_by_story, candidate_coverage_feed_status = collect_candidate_coverage(
+            coverage_search_pool,
+            now=clock,
+            max_queries_per_region=coverage_queries,
+            session=feed_client,
+        )
+        candidate_coverage_articles_collected = sum(
+            len(articles_found) for articles_found in coverage_by_story.values()
+        )
+        if coverage_by_story:
+            augmented: list[Story] = []
+            for story in candidates:
+                additions = coverage_by_story.get(story.news_id, [])
+                if not additions:
+                    augmented.append(story)
+                    continue
+                enriched = build_story([*story.articles, *additions], batch_id, now=clock)
+                # Keep the stable event ID already used for trend matching and
+                # history; a newly discovered alternate headline must not change it.
+                enriched.news_id = story.news_id
+                apply_trend_evidence(
+                    enriched,
+                    match_story_to_trends(enriched, current_trends, min_searches=min_searches),
+                )
+                augmented.append(enriched)
+            candidates = augmented
+            candidates.sort(key=lambda story: story.trend_score, reverse=True)
+        failed_coverage_searches = [
+            f"{entry.get('region', 'unknown')}: {entry.get('headline', '')}"
+            for entry in candidate_coverage_feed_status
+            if entry.get("status") != "OK"
+        ]
+        if failed_coverage_searches:
+            warnings.append("Targeted publisher coverage searches unavailable: " + "; ".join(failed_coverage_searches[:6]))
+        if not candidate_coverage_feed_status:
+            warnings.append("No targeted publisher coverage searches ran; no cross-publisher search fallback was available")
 
     history_persistence = "local SQLite file; GitHub Actions cache is best-effort and can expire"
     state.prune(now=clock)
@@ -669,6 +731,8 @@ def run_daily(
         "google_trends_feed_status": trend_feed_status,
         "google_trend_news_feed_status": trend_news_feed_status,
         "trend_news_articles_collected": len(trend_news_articles),
+        "targeted_coverage_feed_status": candidate_coverage_feed_status,
+        "targeted_coverage_articles_collected": candidate_coverage_articles_collected,
         "google_trend_signals": [signal.to_dict() for signal in current_trends],
         "ranking": {
             "components": {
@@ -688,7 +752,7 @@ def run_daily(
                 region: sum(story.region == region for story in selected)
                 for region in ("INDIA", "WORLD")
             },
-            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches, then stories reported by at least three independent trusted publishers within 24 hours; fill remaining slots with clearly labeled current trusted-source editor drafts; never exceed three stories per region",
+            "selection": "separate India and international rankings; prefer fresh same-region Google Trends matches, then stories reported by at least three independent trusted publishers within 24 hours (including targeted Google News RSS coverage searches); fill remaining slots with clearly labeled current trusted-source editor drafts; never exceed three stories per region",
             "trend_score_note": "Google Trends uses its approximate traffic buckets. The alternate coverage proxy counts independent trusted publisher groups in the latest 24 hours; neither signal is a truth score, social-media count, or exact popularity measurement.",
         },
         "selected_stories": [
@@ -719,6 +783,7 @@ def run_daily(
             "The publication timestamp is not presented as an event date; event date stays blank unless explicitly supplied by a later verified source.",
             "Google Trends traffic is an approximate lower-bound bucket and reflects the configured country, not total global readership.",
             "Google News RSS results are attributed to the publisher named by the feed; RSS corroboration does not replace reading the linked original reports.",
+            "Targeted coverage fallback checks at most six leading MBA-relevant headlines per region (configurable) with a 48-hour Google News RSS query and counts only event-matched, dated, trusted publishers distinct from the original report domains.",
             "A trend signal can come from a fresh same-region Google Trends match or coverage by at least three independent trusted publisher groups within 24 hours. The latter is a publisher-coverage proxy, not search or social-media volume.",
             "When neither trend signal qualifies, fresh trusted-source MBA reports may fill available slots as EDITORIAL_BACKUP drafts; they are explicitly not described as trending.",
             "A NEEDS_REVIEW slide is an editor draft, not a truth certification or publication approval. It may carry unresolved date, conflict, sensitivity, or corroboration flags; open the source pages and resolve those flags before use.",
@@ -748,6 +813,8 @@ def run_daily(
         coverage_by_region=coverage_by_region, fallback_by_region=fallback_by_region,
         region_diagnostics=region_diagnostics, trends_collected=len(raw_trends), fresh_trends=len(current_trends),
         trend_news_articles_collected=len(trend_news_articles), trend_news_feed_status=trend_news_feed_status,
+        candidate_coverage_feed_status=candidate_coverage_feed_status,
+        candidate_coverage_articles_collected=candidate_coverage_articles_collected,
     )
     reason_counts = Counter(reason for story in candidates for reason in story.verification_reasons)
     summary["top_verification_flags"] = [
@@ -756,6 +823,7 @@ def run_daily(
     ]
     summary["publisher_feed_status"] = feed_status
     summary["google_trends_feed_status"] = trend_feed_status
+    summary["targeted_coverage_feed_status"] = candidate_coverage_feed_status
     summary["google_trends_signal_sample"] = {
         region: {
             "current_signals": sum(signal.region == region for signal in current_trends),
