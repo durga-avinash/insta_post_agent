@@ -47,7 +47,7 @@ python -m insta_post_agent.cli --output-root output --history-path state/news_hi
 
 Required output logos are packaged with the repository. Network access is needed only for the configured public feeds; there are no paid services or required secrets.
 
-Settings in `.env.example` are documented values; the application does not load that file automatically. `NEWS_MIN_TREND_SEARCHES` defaults to `10000` (the approximate lower-bound bucket reported by Google Trends), and `NEWS_TREND_QUERIES_PER_GEO` defaults to `20`. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to `20`. `NEWS_COVERAGE_QUERIES_PER_REGION` defaults to `6` and caps the targeted coverage fallback at six candidate searches per region. A day dominated by unrelated topics or with too little trusted current reporting can legitimately produce fewer than six stories.
+Settings in `.env.example` are documented values; the application does not load that file automatically. `NEWS_MIN_TREND_SEARCHES` defaults to `10000` (the approximate lower-bound bucket reported by Google Trends), and `NEWS_TREND_QUERIES_PER_GEO` defaults to `20`. `NEWS_TREND_ARTICLES_PER_QUERY` defaults to `20`. `NEWS_COVERAGE_QUERIES_PER_REGION` defaults to `12` and caps the targeted coverage fallback at twelve candidate searches per region. This is a publisher-pickup signal, not a search-volume or social-media measurement. A day dominated by unrelated topics or with too little trusted current reporting can legitimately produce fewer than six stories.
 
 ## Daily GitHub Actions schedule
 
