@@ -220,7 +220,40 @@ def test_trend_search_skips_below_threshold_topics_and_keeps_publisher_metadata(
     assert articles[0].source_domain == "fixture-publisher.example.test"
     assert articles[0].source_type == "google_news_search"
     assert articles[0].published_at == NOW - timedelta(minutes=2)
+    assert articles[0].region == "INDIA"  # Explicit event geography overrides search locale.
     assert [item["query"] for item in status] == ["FIXTURE ONLY: Indian election result"]
     assert all(item["status"] == "OK" for item in status)
 
+
+def test_india_search_locale_does_not_turn_us_market_article_into_india_news():
+    fixture = Path(__file__).parent / "fixtures" / "google_news_search.xml"
+    content = fixture.read_bytes().replace(
+        b"FIXTURE ONLY: Indian election result brings new coalition talks",
+        b"FIXTURE ONLY: US Federal Reserve reviews Nasdaq market activity",
+    ).replace(
+        b"FIXTURE ONLY: A synthetic report says coalition talks began after the election result.",
+        b"FIXTURE ONLY: Synthetic US market coverage for a region-classification test.",
+    )
+
+    class Response:
+        def __init__(self):
+            self.content = content
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, url, *, params, timeout):
+            return Response()
+
+    signal = TrendSignal(
+        "IN", "INDIA", "FIXTURE ONLY: Nasdaq", "100K+", 100_000,
+        NOW - timedelta(minutes=4), "https://trends.example.test/in",
+    )
+    articles, _ = collect_trend_news_articles(
+        [signal], session=Session(), retrieved_at=NOW, min_delay_seconds=0,
+    )
+
+    assert len(articles) == 1
+    assert articles[0].region == "WORLD"
 
